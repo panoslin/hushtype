@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+	<key>CFBundleDisplayName</key><string>Hushtype</string>
+	<key>CFBundleExecutable</key><string>Hushtype</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
+	<key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>
+	<key>CFBundleLocalizations</key><array><string>zh-Hans</string><string>zh-Hant</string><string>en</string></array>
+	<key>CFBundleIdentifier</key><string>app.hushtype.Hushtype</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>Hushtype</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>__VERSION__</string>
+	<key>CFBundleVersion</key><string>__BUILD__</string>
+	<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
+	<key>LSUIElement</key><true/>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>NSMicrophoneUsageDescription</key><string>Hushtype 在你按住快捷键时录音，并在本机把语音转成文字。</string>
+	<key>NSHumanReadableCopyright</key><string>© 2026 Hushtype</string>
+</dict>
+</plist>

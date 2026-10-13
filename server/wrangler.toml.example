@@ -1,0 +1,14 @@
+name = "hushtype-cloud"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+# wrangler kv namespace create TOKENS && wrangler kv namespace create USAGE
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "<tokens-namespace-id>"
+
+[[kv_namespaces]]
+binding = "USAGE"
+id = "<usage-namespace-id>"
+
+# wrangler secret put ANTHROPIC_API_KEY

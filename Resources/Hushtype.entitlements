@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened runtime: microphone access for dictation. Not sandboxed: the Accessibility API and
+	     CGEventTap that dictation into other apps relies on are unavailable to sandboxed apps. -->
+	<key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>

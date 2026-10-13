@@ -1,0 +1,19 @@
+.build/
+.cache/
+dist/
+*.xcodeproj
+.DS_Store
+.swiftpm/
+
+# Regression data: the author's own voice recordings and dictation text (private)
+eval/data/
+eval/runs/
+
+# Internal notes (competitor analysis, private test notes) — not published
+docs/evaluation.md
+docs/TODO.md
+
+# Internal records and tools that depend on the author's private data — kept locally only
+docs/security-review.md
+eval/
+Resources/Icon/preview.png
