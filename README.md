@@ -11,6 +11,10 @@ Native macOS voice typing: press fn, speak, and cleaned-up text appears at the c
 - **Private** — speech recognition runs on your Mac (SenseVoice + Whisper); audio is never uploaded.
 - **Smart, optional** — Claude Sonnet 5.5 removes filler words, fixes self-corrections and punctuation. Or stay fully offline.
 
+## Watch the 1-minute tour
+
+https://github.com/user-attachments/assets/5ac08f49-3848-45fa-89ee-6542cb8bcaff
+
 ## Install
 
 Download the DMG from [Releases](https://github.com/panoslin/hushtype/releases) and drag Hushtype to Applications. It isn't notarized yet: on first launch, go to **System Settings › Privacy & Security › Open Anyway**. Requires macOS 14+ on Apple silicon.

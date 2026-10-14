@@ -11,6 +11,10 @@
 - **私密**：语音识别在本机完成（SenseVoice + Whisper），录音不上传。
 - **可选智能整理**：用 Claude Sonnet 5.5 去口头禅、处理改口、加标点；也可以完全离线。
 
+## 一分钟使用教程
+
+https://github.com/user-attachments/assets/1a529ed3-d6db-4c31-a9d5-d547b1bfec6d
+
 ## 安装
 
 从 [Releases](https://github.com/panoslin/hushtype/releases) 下载 DMG，把 Hushtype 拖进「应用程序」。目前还没有经过 Apple 公证，第一次打开时到「系统设置 › 隐私与安全性」点「仍要打开」。需要 macOS 14+、Apple 芯片。
