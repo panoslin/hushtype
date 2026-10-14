@@ -115,6 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+        if let i = args.firstIndex(of: "--qa-hud"), i + 1 < args.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                MainActor.assumeIsolated { self?.dictation.qaShowHUD(args[i + 1]) }
+            }
+        }
         if args.contains("--qa-tab-bench") {
             // QA: time each sidebar tab from the click to the finished layout (main thread), 3 rounds.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in

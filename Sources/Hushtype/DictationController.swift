@@ -218,6 +218,19 @@ final class DictationController {
         }
     }
 
+    /// QA (`--qa-hud listening|processing`): shows the HUD as during a dictation, with a moving meter.
+    func qaShowHUD(_ phase: String) {
+        if phase == "processing" { hud.show(.processing); return }
+        hud.model.recordingStarted = Date().addingTimeInterval(-4)
+        hud.show(.listening(handsFree: false))
+        var t = 0.0
+        Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in
+            t += 1 / 30
+            let v = Float(0.35 + 0.3 * sin(t * 7) * sin(t * 2.3) + 0.25 * sin(t * 13))
+            MainActor.assumeIsolated { self?.hud.model.push(level: max(0.05, min(1, v))) }
+        }
+    }
+
     /// The last recording that did not make it into a text field (cancelled, failed, or nowhere to
     /// insert). Long dictations are never lost silently; the menu offers to recover this one.
     private(set) var recoverable: (samples: [Float], context: DictationContext?, command: Bool)?

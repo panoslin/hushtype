@@ -45,19 +45,25 @@ final class AppModel: ObservableObject {
     private var idleTimer: Timer?
     private var pressure: DispatchSourceMemoryPressure?
 
+    /// QA: `--qa-demo` runs on sample settings, dictionary and history (for README screenshots) and
+    /// never touches the user's own data.
+    static let demo = CommandLine.arguments.contains("--qa-demo")
+    static let defaults: UserDefaults = demo ? UserDefaults(suiteName: "app.hushtype.demo")! : .standard
+
     static var supportDir: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if demo { return FileManager.default.temporaryDirectory.appendingPathComponent("HushtypeDemo", isDirectory: true) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Hushtype", isDirectory: true)
     }
 
     init() {
-        LegacyMigration.run()
+        if Self.demo { DemoData.reset() } else { LegacyMigration.run() }
         // History, recordings and learned habits are personal: owner-only permissions.
         for d in [Self.supportDir, Self.supportDir.appendingPathComponent("History")] {
             try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: d.path)
         }
-        let s = HushtypeSettings.load()
+        let s = Self.demo ? DemoData.settings() : HushtypeSettings.load()
         settings = s
         history = (try? HistoryStore(directory: Self.supportDir.appendingPathComponent("History")))
             ?? (try! HistoryStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("HushtypeHistory")))
@@ -65,6 +71,7 @@ final class AppModel: ObservableObject {
         rewriter = Rewriter(backend: nil, model: s.model)
         engine = DictationEngine(rewriter: rewriter)
         engines = RemoteEngine(executable: RemoteEngine.bundled)
+        if Self.demo { DemoData.fill(history) }
         history.prune(olderThanDays: s.historyDays)
         lastResult = history.recent(limit: 1).first
         startResourceManagement()
@@ -120,7 +127,7 @@ final class AppModel: ObservableObject {
     }
 
     private func settingsChanged(_ old: HushtypeSettings) {
-        settings.save()
+        settings.save(Self.defaults)
         if old.provider != settings.provider || old.proxyURL != settings.proxyURL || old.model != settings.model {
             reloadBackend()
         }
