@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import HushtypeCore
 
@@ -19,7 +20,15 @@ final class DictationController {
         var context: DictationContext?
         let bundleID: String?
         let appName: String?
+        /// Recording through a Bluetooth headset mic: the headphones are in call mode meanwhile.
+        var headsetMic = false
     }
+    /// Mutes other apps (not Hushtype) while a Bluetooth headset mic is in use.
+    private let others = OtherAppsMuter()
+    /// Muting / unmuting other apps runs here, in order: starting the tap can take seconds the first
+    /// time (permission prompt) and must not hold up the hotkey or the HUD.
+    private let quiet = DispatchQueue(label: "hushtype.quiet")
+    private var othersMuted = false
     private var state: State = .idle {
         didSet {
             switch state {
@@ -127,33 +136,85 @@ final class DictationController {
         // Checked before we open the mic ourselves: someone else using it means a call or meeting.
         let inCall = AudioDevices.inputInUseElsewhere(uid: app.settings.microphoneUID)
         hud.model.inCall = inCall
-        do {
-            try recorder.start(deviceUID: app.settings.microphoneUID, echoCancel: inCall)
-        } catch {
-            Log.info("recorder failed: \(error)")
-            hud.hide()
-            hud.show(.error((error as? LocalizedError)?.errorDescription ?? String(localized: "无法开始录音")), autoHide: 3)
-            return
-        }
-        app.warmUpForDictation()
-        state = .recording(Session(dryRun: qaDryRun, started: Date(), context: ctx, bundleID: bundleID,
-                                   appName: front?.localizedName))
-        hotkey.isDictating = true
-        if app.settings.playSounds { Sounds.play(.start, theme: .droplet) }
-        if inCall { Log.info("microphone already in use by another app (call/meeting)") }
+        let route = OutputMuter.currentRoute()
+        let headsetMic = AudioDevices.isBluetoothInput(uid: app.settings.microphoneUID) && route.bluetooth && !inCall
+        let playSound = app.settings.playSounds
         // In a call, muting would also silence the other people; leave audio alone.
-        if app.settings.muteWhileDictating && !inCall {
-            // Let the start sound finish before going quiet.
-            DispatchQueue.main.asyncAfter(deadline: .now() + (app.settings.playSounds ? 0.3 : 0)) { [weak self] in
-                guard let self, case .recording = self.state else { return }
-                self.muter.mute()
+        let muteAfter = app.settings.muteWhileDictating && !inCall
+        Log.info(String(format: "output: %@, latency %.0f ms%@", route.bluetooth ? "bluetooth" : "wired/built-in",
+                        route.latency * 1000, headsetMic ? ", headset mic" : ""))
+        let openMic: @MainActor () -> Bool = { [weak self] in
+            guard let self else { return false }
+            do {
+                try self.recorder.start(deviceUID: self.app.settings.microphoneUID, echoCancel: inCall)
+                return true
+            } catch {
+                Log.info("recorder failed: \(error)")
+                self.state = .idle
+                self.hotkey.isDictating = false
+                self.hud.hide()
+                self.hud.show(.error((error as? LocalizedError)?.errorDescription ?? String(localized: "无法开始录音")), autoHide: 3)
+                return false
             }
         }
+        if headsetMic && playSound {
+            // Opening a headset mic switches Bluetooth headphones into call mode, and whatever plays
+            // during the switch is lost. So: start sound first, in music mode; mic once it has been heard.
+            state = .recording(Session(dryRun: qaDryRun, started: Date(), context: ctx, bundleID: bundleID,
+                                       appName: front?.localizedName, headsetMic: true))
+            hotkey.isDictating = true
+            let heard = Sounds.play(.start, theme: .droplet, route: route)
+            DispatchQueue.main.asyncAfter(deadline: .now() + heard) { [weak self] in
+                guard let self, case .recording = self.state else { return }
+                // Mute the other apps, not the headphones: an output mute is reset by the switch into
+                // call mode, and it would also silence the stop sound.
+                if muteAfter { self.othersMuted = true; self.quiet.async { [others = self.others] in others.mute() } }
+                guard openMic() else { self.restoreOthers(); return }
+                Log.info(String(format: "headset mic opened %.0f ms after the key (after the start sound)", Date().timeIntervalSince(t0) * 1000))
+            }
+        } else {
+            guard openMic() else { return }
+            state = .recording(Session(dryRun: qaDryRun, started: Date(), context: ctx, bundleID: bundleID,
+                                       appName: front?.localizedName, headsetMic: headsetMic))
+            hotkey.isDictating = true
+            let soundEnds = playSound ? Sounds.play(.start, theme: .droplet, route: route) : 0
+            if inCall { Log.info("microphone already in use by another app (call/meeting)") }
+            if muteAfter {
+                // Mute only once the start sound has actually been heard: on Bluetooth headphones it is
+                // still in the buffer for a while, and the mute takes effect on the earbuds right away.
+                DispatchQueue.main.asyncAfter(deadline: .now() + soundEnds) { [weak self] in
+                    guard let self, case .recording = self.state else { return }
+                    self.muter.mute()
+                }
+            }
+        }
+        app.warmUpForDictation()
         Log.info(String(format: "recording started %.0f ms after the key", Date().timeIntervalSince(t0) * 1000))
         // Write the prompt cache while the user talks, so the rewrite after release is fast.
         if app.settings.provider != .offline, app.rewriter.backend != nil {
             let system = app.engine.systemPrompt(app.engineOptions(), twoHypotheses: app.wantsWhisper)
             Task.detached(priority: .utility) { [rewriter = app.rewriter] in await rewriter.prewarm(system: system) }
+        }
+    }
+
+    /// Bluetooth headphones need ~4 s to leave call mode after the headset mic closes (measured with
+    /// AirPods Pro: 24 kHz mono → 48 kHz stereo after 4.2–4.4 s). Music resumed before that plays in
+    /// call quality and sounds broken, so other apps stay muted until the output is back at a music rate.
+    private func restoreOthers() {
+        guard othersMuted else { return }
+        othersMuted = false
+        quiet.async { [others] in others.restore() }
+    }
+
+    private func unmuteOthersAfterCallMode() {
+        guard othersMuted else { return }
+        let t = Date()
+        OutputMuter.whenOutputRate({ $0 >= 44100 }, timeout: 8) { [weak self] timedOut in
+            MainActor.assumeIsolated {
+                Log.info(String(format: "headphones back in music mode after %.1f s%@", Date().timeIntervalSince(t), timedOut ? " (timed out)" : ""))
+                if let self, case .recording = self.state { return }   // a new dictation keeps them quiet
+                self?.restoreOthers()
+            }
         }
     }
 
@@ -164,13 +225,14 @@ final class DictationController {
 
     func cancel() {
         Log.info("cancel")
-        if case .recording = state, app.settings.playSounds { Sounds.play(.cancel, theme: .droplet) }
+        if case .recording = state, app.settings.playSounds { Sounds.play(.cancel, theme: .droplet, route: OutputMuter.currentRoute()) }
         hotkey.isDictating = false
         hotkey.reset()
         switch state {
         case .recording(let session):
             let samples = recorder.stop()
             muter.restore()
+            if session.headsetMic { unmuteOthersAfterCallMode() }
             state = .idle
             if Double(samples.count) / 16000 >= Self.keepAfterSeconds {
                 recoverable = (samples, session.context, session.command)
@@ -258,6 +320,7 @@ final class DictationController {
         hotkey.reset()
         var samples = recorder.stop()
         muter.restore()
+        if session.headsetMic { unmuteOthersAfterCallMode() }
         if let inj = injected { samples = inj; injected = nil }
         if let t = Self.testAudio { samples = t[testIndex % t.count]; testIndex += 1 }
         let seconds = Double(samples.count) / 16000
@@ -267,7 +330,7 @@ final class DictationController {
             hud.show(.error(String(localized: "录音太短，没有收到声音")), autoHide: 1.5)
             return
         }
-        if app.settings.playSounds { Sounds.play(.stop, theme: .droplet) }
+        if app.settings.playSounds { Sounds.play(.stop, theme: .droplet, route: OutputMuter.currentRoute()) }
         state = .processing
         hud.show(.processing)
         var options = app.engineOptions()
@@ -521,17 +584,44 @@ extension AppModel {
 enum Sounds {
     enum Kind: String { case start, stop, cancel }
     private static var cache: [String: NSSound] = [:]
+    /// Silence in front of each sound on Bluetooth headphones: the link wakes up (and an unmute
+    /// settles) during it instead of eating the start of the sound.
+    static let bluetoothLeadIn = 0.3
 
-    static func play(_ kind: Kind, theme: SoundTheme) {
+    /// Plays the sound and returns when it will have finished playing in the listener's ears (seconds
+    /// from now), including the output's own latency.
+    @discardableResult
+    static func play(_ kind: Kind, theme: SoundTheme, route: OutputMuter.Route) -> Double {
         let name = "\(theme.rawValue)-\(kind.rawValue)"
-        let sound: NSSound? = cache[name] ?? {
+        let lead = route.bluetooth && !route.running ? bluetoothLeadIn : 0
+        let key = "\(name)@\(lead)"
+        let sound: NSSound? = cache[key] ?? {
             guard let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "Sounds"),
-                  let s = NSSound(contentsOf: url, byReference: true) else { return nil }
+                  let file = lead > 0 ? padded(url, lead: lead) : url,
+                  let s = NSSound(contentsOf: file, byReference: true) else { return nil }
             s.volume = 0.6
-            cache[name] = s
+            cache[key] = s
             return s
         }()
         sound?.stop()
         sound?.play()
+        let length = sound?.duration ?? 0.35
+        // AirPods report ~16 ms output latency but buffer ~200 ms; trust at least 250 ms on Bluetooth.
+        return length + (route.bluetooth ? max(route.latency, 0.25) + 0.1 : route.latency + 0.02)
+    }
+
+    /// The same sound with `lead` seconds of silence in front, written once to the caches folder.
+    private static func padded(_ url: URL, lead: Double) -> URL? {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("hushtype-\(url.deletingPathExtension().lastPathComponent)-lead\(Int(lead * 1000)).caf")
+        if FileManager.default.fileExists(atPath: out.path) { return out }
+        guard let src = try? AVAudioFile(forReading: url),
+              let buf = AVAudioPCMBuffer(pcmFormat: src.processingFormat, frameCapacity: AVAudioFrameCount(src.length)),
+              (try? src.read(into: buf)) != nil,
+              let dst = try? AVAudioFile(forWriting: out, settings: src.processingFormat.settings),
+              let gap = AVAudioPCMBuffer(pcmFormat: src.processingFormat, frameCapacity: AVAudioFrameCount(lead * src.processingFormat.sampleRate))
+        else { return nil }
+        gap.frameLength = gap.frameCapacity   // zero-filled
+        do { try dst.write(from: gap); try dst.write(from: buf) } catch { return nil }
+        return out
     }
 }

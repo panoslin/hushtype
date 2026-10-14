@@ -1,3 +1,4 @@
+import ServiceManagement
 import AppKit
 import HushtypeCore
 import SwiftUI
@@ -7,7 +8,11 @@ import SwiftUI
 struct GeneralTab: View {
     @ObservedObject var app: AppModel
     var onTriggerChanged: () -> Void
-    @Local private var mics = AudioDevices.inputs()
+    // Both are slow system queries (CoreAudio walks every device, including iPhone Continuity mics;
+    // the login-item status is an XPC round trip), so they load off the main thread after the tab shows.
+    @Local private var mics: [AudioDevices.Device] = GeneralTab.lastMics
+    @Local private var loginOn: Bool? = nil
+    private static var lastMics: [AudioDevices.Device] = []
 
     var body: some View {
         Form {
@@ -55,7 +60,8 @@ struct GeneralTab: View {
                 .pickerStyle(.segmented)
             }
             Section(String(localized: "启动")) {
-                Toggle(String(localized: "登录时自动启动"), isOn: Binding(get: { app.launchAtLogin }, set: { app.launchAtLogin = $0 }))
+                Toggle(String(localized: "登录时自动启动"), isOn: Binding(get: { loginOn ?? false }, set: { app.launchAtLogin = $0; loginOn = $0 }))
+                    .disabled(loginOn == nil)
                 Toggle(String(localized: "在 Dock 中显示"), isOn: $app.settings.showInDock)
             }
             Section(String(localized: "权限")) {
@@ -70,7 +76,14 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { mics = AudioDevices.inputs(); app.refreshPermissions() }
+        .onAppear {
+            app.refreshPermissions()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let m = AudioDevices.inputs()
+                let on = SMAppService.mainApp.status == .enabled
+                DispatchQueue.main.async { GeneralTab.lastMics = m; mics = m; loginOn = on }
+            }
+        }
     }
 }
 

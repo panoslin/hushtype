@@ -36,8 +36,10 @@ struct DictionaryTab: View {
     var body: some View {
         SettingsPage(title: String(localized: "词典"),
                      subtitle: String(localized: "人名、产品名、术语的正确写法。识别出读音相近的词时，会按这里的写法整理。")) {
-            Form {
-                Section {
+            // Hundreds of terms: a grouped Form builds every row up front (≈0.5 s for 500 terms), so the
+            // list is a LazyVStack that only builds what is on screen, styled like the grouped form.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 8) {
                         TextField("", text: $newTerm, prompt: Text(String(localized: "添加词条，例如 Kubernetes、李想（可一次输入多个，用逗号隔开）")))
                             .labelsHidden()
@@ -58,26 +60,32 @@ struct DictionaryTab: View {
                         }
                         .fixedSize()
                     }
+                    .padding(.vertical, 10)
                     if let w = review.working {
                         HStack(spacing: 8) { ProgressView().controlSize(.small); Text(w).foregroundStyle(.secondary) }
+                            .padding(.bottom, 8)
                     }
-                }
-                Section {
+                    Text(String(localized: "\(app.settings.dictionary.count) 个词条"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.top, 14).padding(.bottom, 6)
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("", text: $query, prompt: Text(String(localized: "搜索词条"))).labelsHidden().textFieldStyle(.plain)
                     }
+                    .padding(.vertical, 9)
                     if app.settings.dictionary.isEmpty {
+                        Rectangle().fill(DS.line).frame(height: 1)
                         Text(String(localized: "手动添加，或从 Typeless 导入你常用的专有名词。")).foregroundStyle(.secondary)
+                            .padding(.vertical, 9)
                     }
                     ForEach(filtered, id: \.self) { term in
+                        Rectangle().fill(DS.line).frame(height: 1)
                         TermRow(term: term) { app.settings.dictionary.removeAll { $0 == term } }
+                            .padding(.vertical, 9)
                     }
-                } header: {
-                    Text(String(localized: "\(app.settings.dictionary.count) 个词条"))
                 }
+                .padding(.horizontal, 26).padding(.vertical, 12)
             }
-            .formStyle(.grouped)
         }
         .sheet(isPresented: $review.isPresented) { ImportReviewSheet(review: review, onAdd: addAll) }
         .sheet(isPresented: $showLinks) {

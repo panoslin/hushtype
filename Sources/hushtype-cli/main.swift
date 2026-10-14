@@ -144,6 +144,33 @@ case "rec-test":
     let s = r.stop()
     let rms = sqrt(s.reduce(0) { $0 + $1 * $1 } / Float(max(1, s.count)))
     print(String(format: "samples %d (%.2fs) rms %.4f", s.count, Double(s.count) / 16000, rms))
+case "mic-ab":
+    // hushtype-cli mic-ab [seconds] [--uid UID] [--restart] : records with the audio queue and with
+    // AVAudioEngine at the same time and compares the two 16 kHz signals; --restart reopens the queue
+    // halfway (what a device change does); --uid records the queue from that device.
+    let secs = Double(args.count > 2 ? args[2] : "4") ?? 4
+    let uid = args.firstIndex(of: "--uid").map { args[$0 + 1] }
+    let q = AudioRecorder(), e = AudioRecorder()
+    try q.start(deviceUID: uid)
+    try e.start(useEngine: true)
+    if args.contains("--restart") {
+        try await Task.sleep(nanoseconds: UInt64(secs / 2 * 1e9)); q.restartQueue()
+        try await Task.sleep(nanoseconds: UInt64(secs / 2 * 1e9))
+    } else { try await Task.sleep(nanoseconds: UInt64(secs * 1e9)) }
+    let a = q.stop(), b = e.stop()
+    func rms(_ x: [Float]) -> Float { sqrt(x.reduce(0) { $0 + $1 * $1 } / Float(max(1, x.count))) }
+    // align: best lag within ±200 ms, then correlation
+    let n = min(a.count, b.count) - 3200
+    var best = (lag: 0, r: Float(-2))
+    if n > 1600 {
+        for lag in stride(from: -3200, through: 3200, by: 4) {
+            var sab: Float = 0, saa: Float = 0, sbb: Float = 0
+            for i in stride(from: 3200, to: n, by: 2) { let x = a[i], y = b[i + lag]; sab += x * y; saa += x * x; sbb += y * y }
+            let r = sab / max(1e-9, sqrt(saa * sbb)); if r > best.r { best = (lag, r) }
+        }
+    }
+    print(String(format: "queue %.2fs rms %.4f | engine %.2fs rms %.4f | correlation %.3f at lag %d ms",
+                 Double(a.count) / 16000, rms(a), Double(b.count) / 16000, rms(b), best.r, best.lag / 16))
 case "long":
     // hushtype-cli long <models-dir> <audio> <out.txt> : full pipeline on one long recording, with timings.
     let models = URL(fileURLWithPath: args[2])

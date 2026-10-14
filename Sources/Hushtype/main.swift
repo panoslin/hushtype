@@ -93,6 +93,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+        if let i = args.firstIndex(of: "--qa-open"), i + 1 < args.count {
+            let m: [String: SidebarSection] = ["home": .home, "dictionary": .dictionary, "general": .general, "ai": .ai, "privacy": .privacy]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                MainActor.assumeIsolated { self?.showMain(m[args[i + 1]] ?? .home); NSApp.activate(ignoringOtherApps: true) }
+            }
+        }
+        if let i = args.firstIndex(of: "--qa-mute-others"), i + 1 < args.count, let secs = Double(args[i + 1]) {
+            // QA: silence other apps for a few seconds (process tap) while Hushtype's own sound plays.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                MainActor.assumeIsolated {
+                    let m = OtherAppsMuter()
+                    Sounds.play(.start, theme: .droplet, route: OutputMuter.currentRoute())
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        Log.info("qa mute-others: \(m.mute())")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + secs / 2) {
+                            MainActor.assumeIsolated { Sounds.play(.stop, theme: .droplet, route: OutputMuter.currentRoute()) }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + secs) { m.restore() }
+                    }
+                }
+            }
+        }
+        if args.contains("--qa-tab-bench") {
+            // QA: time each sidebar tab from the click to the finished layout (main thread), 3 rounds.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self else { return }
+                self.showMain(.home)
+                let order: [SidebarSection] = [.dictionary, .general, .ai, .privacy, .home]
+                var k = 0
+                @MainActor func step() {
+                    guard k < order.count * 3, let w = self.mainWindow else { return }
+                    let s = order[k % order.count]; k += 1
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    self.showMain(s)
+                    w.contentView?.layoutSubtreeIfNeeded(); w.displayIfNeeded()
+                    let t1 = CFAbsoluteTimeGetCurrent()
+                    DispatchQueue.main.async { MainActor.assumeIsolated {
+                        Log.info(String(format: "tab bench %@: layout %.0f ms, next turn %.0f ms", "\(s)", (t1 - t0) * 1000, (CFAbsoluteTimeGetCurrent() - t0) * 1000))
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { MainActor.assumeIsolated { step() } }
+                    } }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { MainActor.assumeIsolated { step() } }
+            }
+        }
         if args.contains("--qa-show-panel") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.togglePanel() }
         }

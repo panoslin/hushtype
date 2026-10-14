@@ -18,6 +18,8 @@
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Hushtype 在你说话时把其他 App 的声音临时静音，不会录制或保存任何系统声音。</string>
 	<key>NSMicrophoneUsageDescription</key><string>Hushtype 在你按住快捷键时录音，并在本机把语音转成文字。</string>
 	<key>NSHumanReadableCopyright</key><string>© 2026 Hushtype</string>
 </dict>
