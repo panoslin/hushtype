@@ -17,11 +17,9 @@ Download the DMG from [Releases](https://github.com/panoslin/hushtype/releases) 
 
 ## Use
 
-| | |
-|---|---|
-| fn, speak, fn | Insert text (or hold fn to talk) |
-| fn + ⇧ | Speak an instruction for the selected text |
-| Esc | Cancel (still saved to History) |
+- **fn**, speak, **fn** — insert text (or hold fn while talking)
+- **fn + ⇧** — speak an instruction for the selected text
+- **Esc** — cancel (still saved to History)
 
 ## Build
 
