@@ -13,7 +13,7 @@ Native macOS voice typing: press fn, speak, and cleaned-up text appears at the c
 
 ## Watch the 1-minute tour
 
-https://github.com/user-attachments/assets/5ac08f49-3848-45fa-89ee-6542cb8bcaff
+https://github.com/user-attachments/assets/81bb0812-c487-41d5-b6fe-5c47b43fbe8c
 
 ## Install
 

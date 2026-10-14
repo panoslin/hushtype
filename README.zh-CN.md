@@ -13,7 +13,7 @@
 
 ## 一分钟使用教程
 
-https://github.com/user-attachments/assets/1a529ed3-d6db-4c31-a9d5-d547b1bfec6d
+https://github.com/user-attachments/assets/d9c41e97-f004-4f79-9a13-58a56eda606b
 
 ## 安装
 
