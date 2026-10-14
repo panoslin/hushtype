@@ -2,10 +2,24 @@
 
 原生 macOS 语音输入法：按住快捷键说话，松开后把整理好的文字插入到任何 App 的光标处。
 
-- **原生**：Swift + AppKit/SwiftUI，没有 Electron。App 本体约 69 MB。
-- **本地识别**：SenseVoice（sherpa-onnx）+ Whisper large-v3-turbo（WhisperKit，Neural Engine）在本机并行运行，录音不上传。
-- **智能整理**：Claude Sonnet 5.5 删口头禅、处理改口、加标点和排版、按上下文纠正专有名词。
-- **省资源**：麦克风只在按住时打开；模型闲置 30 分钟或系统内存紧张时自动释放，下次按键时和说话同步加载。
+## 为什么是 Hushtype
+
+| | |
+|---|---|
+| 🪶 **体积小** | 安装包约 26 MB，App 本体约 76 MB。原生 Swift + AppKit/SwiftUI 编写，没有打包浏览器内核（Electron）。语音模型首次使用时下载（约 850 MB，固定版本 + SHA-256 校验）。 |
+| 🧠 **内存占用低** | 模型全部加载时约 600 MB（App 118 MB + 识别引擎 480 MB），仍低于实测约 675 MB 的同类 Electron 听写应用，而后者还不在本地跑任何模型。模型闲置 30 分钟或系统内存紧张时自动释放，之后只占约 118 MB。空闲时 CPU 0%，不占用 GPU。 |
+| 🔒 **识别全在本地** | SenseVoice（sherpa-onnx）+ Whisper large-v3-turbo（WhisperKit，跑在神经引擎上）在本机并行识别。录音从不上传，默认也不保存。 |
+| ✨ **可选 AI 整理** | 识别出的文字可以交给 Claude Sonnet 5.5 整理：删口头禅、处理改口、加标点和排版、按上下文纠正专有名词。只发送文字，不发送录音；可以关掉，完全离线使用。 |
+
+<sub>内存为作者 Apple 芯片 Mac 上的实测值（2026-10），随模型和系统而变。</sub>
+
+## 安装
+
+1. 从 [Releases](https://github.com/panoslin/hushtype/releases) 下载 `Hushtype-<版本>.dmg`，把 Hushtype 拖进「应用程序」。
+2. 目前没有 Apple 公证，第一次打开会被拦下：到「系统设置 › 隐私与安全性」，在页面下方点「仍要打开」。
+3. 按引导授予麦克风和辅助功能权限，等语音模型下载完成。
+
+需要 macOS 14+、Apple 芯片。
 
 ## 使用
 
@@ -44,7 +58,7 @@ Sources/HushtypeCore/   引擎（无 UI，可单独嵌入其他产品）
 Sources/Hushtype/       菜单栏 App：快捷键、HUD、引导、设置
 Sources/hushtype-cli/   开发工具：transcribe / eval / install-models
 server/               Hushtype Cloud 参考实现（Cloudflare Worker 代理）
-docs/                 评测、隐私说明
+docs/                 隐私说明
 ```
 
 ## 整理服务
