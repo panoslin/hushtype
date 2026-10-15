@@ -18,6 +18,32 @@ import Testing
         try Rewriter(backend: .openAICompatible(c)).makeRequest(system: "SYS", user: user, maxTokens: maxTokens, effort: "low")
     }
 
+    /// Real 401 bodies returned on 2026-10-15 by each vendor's endpoint for an invalid key: every one must
+    /// come out as an HTTP 401 auth error (shown as "check your key"), with no key text in it.
+    @Test func realInvalidKeyResponsesFromEachVendor() throws {
+        let bodies: [(LLMVendor, String)] = [
+            (.deepseek, #"{"error":{"message":"Authentication Fails, Your api key: ****test is invalid","type":"authentication_error","param":null,"code":"invalid_request_error"}}"#),
+            (.zhipu, #"{"error":{"code":"401","message":"令牌已过期或验证不正确"}}"#),
+            (.moonshot, #"{"error":{"message":"Invalid Authentication","type":"invalid_authentication_error"}}"#),
+            (.qwen, #"{"error":{"message":"Incorrect API key provided. For details, see: https://help.aliyun.com/zh/model-studio/error-code#apikey-error","type":"invalid_request_error"}}"#),
+            (.doubao, #"{"error":{"code":"AuthenticationError","message":"The API key format is incorrect.","param":"","type":"Unauthorized"}}"#),
+            (.openai, #"{"error":{"message":"Incorrect API key provided: sk-inval***test.","type":"invalid_request_error","code":"invalid_api_key"}}"#),
+        ]
+        for (v, body) in bodies {
+            let rw = Rewriter(backend: .openAICompatible(Self.config(v)))
+            do { _ = try rw.parse(data: Data(body.utf8), status: 401); Issue.record("\(v): expected an error") }
+            catch let e as RewriteError {
+                guard case .http(401, _) = e else { Issue.record("\(v): wrong error \(e)"); continue }
+                #expect(e.errorDescription == RewriteError.http(401, "").errorDescription, "\(v)")
+            }
+        }
+    }
+
+    /// The release build ignores launch arguments (QA hooks like --qa-key-file exist only with -DHUSHTYPE_QA).
+    @Test func releaseIgnoresLaunchArguments() {
+        #expect(LaunchArgs.all.count <= 1)
+    }
+
     @Test func everyPresetHasHttpsEndpointAndDefaultModel() {
         for v in LLMVendor.allCases where v != .custom {
             let p = v.preset
