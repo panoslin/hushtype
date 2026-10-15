@@ -35,4 +35,27 @@ public enum Log {
             }
         }
     }
+
+    /// Keeps the log folder bounded. The live log rotates at 2 MB with one backup (≈ 4 MB); anything
+    /// else in the folder (old names like murmur.log, crash leftovers) goes after `maxAgeDays`, and the
+    /// oldest extras go first while the folder is over `maxBytes`. Returns how many files were removed.
+    @discardableResult
+    public static func trimDirectory(_ dir: URL? = nil, maxBytes: Int64 = 10_000_000, maxAgeDays: Double = 30,
+                                     now: Date = Date()) -> Int {
+        let dir = dir ?? url.deletingLastPathComponent()
+        let keep: Set<String> = [url.lastPathComponent, url.deletingPathExtension().appendingPathExtension("1.log").lastPathComponent]
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        let all = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? []).compactMap { u -> (URL, Int64, Date)? in
+            guard let v = try? u.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return nil }
+            return (u, Int64(v.fileSize ?? 0), v.contentModificationDate ?? .distantPast)
+        }
+        var removed = 0
+        var total = all.reduce(Int64(0)) { $0 + $1.1 }
+        for (u, size, date) in all.sorted(by: { $0.2 < $1.2 }) where !keep.contains(u.lastPathComponent) {
+            if now.timeIntervalSince(date) > maxAgeDays * 86400 || total > maxBytes {
+                if (try? FileManager.default.removeItem(at: u)) != nil { removed += 1; total -= size }
+            }
+        }
+        return removed
+    }
 }

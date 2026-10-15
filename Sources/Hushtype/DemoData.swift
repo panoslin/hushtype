@@ -17,6 +17,12 @@ enum DemoData {
         s.dictionary = ["Hushtype", "Kubernetes", "PostgreSQL", "Figma", "OKR", "TypeScript", "Claude Code",
                         "SwiftUI", "李想", "王晓雨", "陈默", "Q3 路线图", "增长飞轮", "灰度发布", "A/B 测试",
                         "Notion", "Linear", "Vercel", "React Native", "GraphQL"]
+        // `--qa-provider deepseek|zhipu|…`: show the third-party provider settings (screenshots).
+        let args = LaunchArgs.all
+        if let i = args.firstIndex(of: "--qa-provider"), i + 1 < args.count, let v = LLMVendor(rawValue: args[i + 1]) {
+            s.provider = .openAICompatible
+            s.llmVendor = v
+        }
         return s
     }
 

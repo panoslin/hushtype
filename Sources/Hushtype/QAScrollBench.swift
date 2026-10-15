@@ -30,6 +30,14 @@ final class QAScrollBench: NSObject {
         b.begin()
     }
 
+    /// QA hook: `--qa-scroll-end` scrolls the main window's page to the bottom (screenshots of long settings pages).
+    static func scrollToEnd(in window: NSWindow) {
+        guard let content = window.contentView, let scroll = largestScrollView(in: content), let doc = scroll.documentView else { return }
+        let y = doc.isFlipped ? max(0, doc.bounds.height - scroll.contentView.bounds.height) : 0
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
     private init(window: NSWindow, scroll: NSScrollView, label: String) {
         self.window = window
         self.scroll = scroll

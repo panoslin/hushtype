@@ -95,6 +95,9 @@ public enum DataMigration {
             // from someone else) must never redirect transcripts to another server or widen sharing.
             incoming.provider = settings.provider
             incoming.proxyURL = settings.proxyURL
+            incoming.llmVendor = settings.llmVendor
+            incoming.llmModel = settings.llmModel
+            incoming.llmBaseURL = settings.llmBaseURL
             incoming.sendContext = settings.sendContext
             incoming.contextExcluded = Array(Set(settings.contextExcluded).union(incoming.contextExcluded))
             settings = incoming

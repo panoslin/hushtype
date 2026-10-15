@@ -46,6 +46,9 @@ final class DictationController {
     /// Called when text lands in the menu bar (the icon plays its catch animation).
     var onParked: (() -> Void)?
     private var processingTask: Task<Void, Never>?
+    /// While recording: flags a microphone that delivers only digital silence (muted / wrong device).
+    private var silenceTimer: Timer?
+    private var micOpenedAt: Date?
 
     /// Recordings shorter than this are treated as accidental taps.
     static let minimumSeconds = 0.35
@@ -127,17 +130,21 @@ final class DictationController {
         let t0 = Date()
         hud.model.recordingStarted = Date()
         hud.model.inCall = false
+        hud.model.micSilent = false
+        micOpenedAt = nil
         hud.show(.listening(handsFree: handsFree))
         CATransaction.flush()
         let front = NSWorkspace.shared.frontmostApplication
         let bundleID = front?.bundleIdentifier
         let ctx = !qaDryRun && app.settings.allowsContext(for: bundleID) && FocusedElement.isTrusted
             ? FocusedElement.context() : nil
+        let micUID = AudioDevices.preferredInput(chosen: app.settings.microphoneUID, preferBuiltIn: app.settings.preferBuiltInMic)
+        if micUID != app.settings.microphoneUID { Log.info("headset is the system input; recording from the built-in mic") }
         // Checked before we open the mic ourselves: someone else using it means a call or meeting.
-        let inCall = AudioDevices.inputInUseElsewhere(uid: app.settings.microphoneUID)
+        let inCall = AudioDevices.inputInUseElsewhere(uid: micUID)
         hud.model.inCall = inCall
         let route = OutputMuter.currentRoute()
-        let headsetMic = AudioDevices.isBluetoothInput(uid: app.settings.microphoneUID) && route.bluetooth && !inCall
+        let headsetMic = AudioDevices.isBluetoothInput(uid: micUID) && route.bluetooth && !inCall
         let playSound = app.settings.playSounds
         // In a call, muting would also silence the other people; leave audio alone.
         let muteAfter = app.settings.muteWhileDictating && !inCall
@@ -146,7 +153,9 @@ final class DictationController {
         let openMic: @MainActor () -> Bool = { [weak self] in
             guard let self else { return false }
             do {
-                try self.recorder.start(deviceUID: self.app.settings.microphoneUID, echoCancel: inCall)
+                try self.recorder.start(deviceUID: micUID, echoCancel: inCall)
+                self.micOpenedAt = Date()
+                self.watchForSilentMic()
                 return true
             } catch {
                 Log.info("recorder failed: \(error)")
@@ -197,6 +206,26 @@ final class DictationController {
         }
     }
 
+    /// Typeless-style check: a mic that is muted (hardware switch, System Settings input volume 0) or
+    /// the wrong device records exact zeros. Say so while the user is still talking, not afterwards.
+    private func watchForSilentMic() {
+        silenceTimer?.invalidate()
+        guard Self.testAudio == nil else { return }
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self, case .recording = self.state, let opened = self.micOpenedAt else { timer.invalidate(); return }
+                guard Date().timeIntervalSince(opened) >= 1.5 else { return }
+                let silent = AudioRecorder.isDigitalSilence(peak: self.recorder.peak)
+                if silent != self.hud.model.micSilent {
+                    self.hud.model.micSilent = silent
+                    if silent { Log.info("microphone delivers digital silence (muted or wrong device)") }
+                }
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        silenceTimer = t
+    }
+
     /// Bluetooth headphones need ~4 s to leave call mode after the headset mic closes (measured with
     /// AirPods Pro: 24 kHz mono → 48 kHz stereo after 4.2–4.4 s). Music resumed before that plays in
     /// call quality and sounds broken, so other apps stay muted until the output is back at a music rate.
@@ -244,6 +273,7 @@ final class DictationController {
         switch state {
         case .recording(let session):
             let samples = recorder.stop()
+            silenceTimer?.invalidate()
             muter.restore()
             if session.headsetMic { unmuteOthersAfterCallMode() }
             state = .idle
@@ -318,7 +348,7 @@ final class DictationController {
     /// so the real hotkey → HUD → context → insert path can be tested unattended.
     /// Several files can be given separated by ":"; each dictation uses the next one.
     static let testAudio: [[Float]]? = {
-        let a = CommandLine.arguments
+        let a = LaunchArgs.all
         guard let i = a.firstIndex(of: "--test-audio"), i + 1 < a.count else { return nil }
         let clips = a[i + 1].split(separator: ":").compactMap { try? AudioFile.read16kMono(URL(fileURLWithPath: String($0))) }
         return clips.isEmpty ? nil : clips
@@ -332,8 +362,11 @@ final class DictationController {
         // tap would only "end" a dictation that is already over.
         hotkey.reset()
         var samples = recorder.stop()
+        silenceTimer?.invalidate()
+        var micWasSilent = AudioRecorder.isDigitalSilence(peak: recorder.peak)
         muter.restore()
         if session.headsetMic { unmuteOthersAfterCallMode() }
+        if injected != nil || Self.testAudio != nil { micWasSilent = false }
         if let inj = injected { samples = inj; injected = nil }
         if let t = Self.testAudio { samples = t[testIndex % t.count]; testIndex += 1 }
         let seconds = Double(samples.count) / 16000
@@ -378,17 +411,18 @@ final class DictationController {
             if Task.isCancelled { return }
             if offlineFallback { out.rewriteError = "offline" }
             await self.deliver(out, session: session, samples: samples, seconds: seconds, keepAudio: keepAudio,
-                               released: released)
+                               released: released, micWasSilent: micWasSilent)
         }
     }
 
     private func deliver(_ out: DictationOutput, session: Session, samples: [Float], seconds: Double, keepAudio: Bool,
-                         released: Date) async {
+                         released: Date, micWasSilent: Bool = false) async {
         defer { state = .idle }
         let text = out.text
         guard !text.isEmpty else {
             if seconds >= Self.keepAfterSeconds { recoverable = (samples, session.context, session.command) }
-            hud.show(.error(String(localized: "没有听到内容")), autoHide: 1.5)
+            hud.show(.error(micWasSilent ? String(localized: "麦克风没有收到任何声音 · 检查麦克风是否被静音，或在设置里换一个输入设备")
+                                         : String(localized: "没有听到内容")), autoHide: micWasSilent ? 4 : 1.5)
             return
         }
         recoverable = nil
@@ -434,7 +468,8 @@ final class DictationController {
                                audioFile: keepAudio ? app.history.saveAudio(samples, id: id) : nil)
         app.history.add(item)
         app.lastResult = item
-        if !session.command, app.settings.provider != .offline {
+        if !session.command, app.settings.provider != .offline, app.settings.learnFromEdits,
+           !EditLearner.isTerminal(bundleID: session.bundleID) {
             if let handle = FocusedElement.currentHandle(), handle.value != nil {
                 scheduleLearning(inserted: text, handle: handle, url: session.context?.url)
             } else {
@@ -576,7 +611,16 @@ extension DictationController {
                 : !pendingTerms.isEmpty ? String(localized: "已记下「\(pendingTerms.joined(separator: "、"))」· 再改一次就加入词典")
                 : example != nil ? String(localized: "已记住你的修改")
                 : nil
-            if let message { hud.show(.done(message), autoHide: 2.5) }
+            if !added.isEmpty {
+                // Typeless-style: an automatic dictionary change can be undone right from the pill.
+                hud.model.undo = { [weak app] in
+                    guard let app else { return }
+                    app.settings.dictionary.removeAll { t in added.contains(t) }
+                    Log.info("undid \(added.count) learned term(s)")
+                }
+                hud.model.lastLatency = nil
+                hud.show(.learned(message ?? ""), autoHide: 5)
+            } else if let message { hud.show(.done(message), autoHide: 2.5) }
         }
     }
 }

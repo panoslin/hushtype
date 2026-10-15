@@ -128,7 +128,24 @@ public enum EditLearner {
         // so allow up to half the text to change, but not a wholesale rewrite.
         guard abs(a.count - b.count) <= max(12, a.count / 2) else { return .tooLarge }
         let d = levenshtein(a, b)
-        return d > 0 && d <= max(6, a.count / 2) ? .correction : .tooLarge
+        guard d > 0 && d <= max(6, a.count / 2) else { return .tooLarge }
+        // A real fix leaves most of the text in place around it. Different text that merely looks similar
+        // (the next message typed into a chat / terminal box, "还得再上一版本" vs "型生成的那版本") shares
+        // little more than a word at one end.
+        var pre = 0; while pre < min(a.count, b.count), a[pre] == b[pre] { pre += 1 }
+        var suf = 0; while suf < min(a.count, b.count) - pre, a[a.count - 1 - suf] == b[b.count - 1 - suf] { suf += 1 }
+        if a.count < 24 { return (pre >= 1 && suf >= 1) || pre + suf >= a.count / 2 ? .correction : .tooLarge }
+        return pre + suf >= a.count * 2 / 5 || d <= 4 ? .correction : .tooLarge
+    }
+
+    /// Terminals expose the whole scrollback as one "field" and redraw it (prompts, echoes, wrapping):
+    /// watching it for edits only produces false corrections.
+    public static func isTerminal(bundleID: String?) -> Bool {
+        guard let id = bundleID?.lowercased() else { return false }
+        let terminals = ["com.apple.terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.warp-stable",
+                         "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper", "com.raphaelamorim.rio",
+                         "io.tabby", "com.termius-dmg.mac"]
+        return terminals.contains(id)
     }
 
     public static func looksLikeCorrection(inserted: String, edited: String) -> Bool {

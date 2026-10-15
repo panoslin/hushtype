@@ -55,7 +55,7 @@ struct MainView: View {
                 case .dictionary: DictionaryTab(app: app)
                 case .general: SettingsPage(title: String(localized: "通用"), subtitle: String(localized: "快捷键、麦克风、外观和权限")) {
                     GeneralTab(app: app, onTriggerChanged: onTriggerChanged) }
-                case .ai: SettingsPage(title: String(localized: "整理服务"), subtitle: String(localized: "用 Claude 去口头禅、处理改口、加标点和排版")) { AITab(app: app) }
+                case .ai: SettingsPage(title: String(localized: "整理服务"), subtitle: String(localized: "用大模型去口头禅、处理改口、加标点和排版（默认 Claude，也可以用 DeepSeek、通义等）")) { AITab(app: app) }
                 case .privacy: SettingsPage(title: String(localized: "隐私"), subtitle: String(localized: "发送什么、保存什么，由你决定")) { PrivacyTab(app: app) }
                 }
             }

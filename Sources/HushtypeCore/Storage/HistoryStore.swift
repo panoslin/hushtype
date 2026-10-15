@@ -152,7 +152,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     public func delete(id: String) {
-        let audio = recent(limit: 10_000).first { $0.id == id }?.audioFile
+        let audio = audioFile(id: id)
         queue.sync {
             var st: OpaquePointer?
             guard sqlite3_prepare_v2(db, "DELETE FROM history WHERE id = ?", -1, &st, nil) == SQLITE_OK else { return }
@@ -163,12 +163,210 @@ public final class HistoryStore: @unchecked Sendable {
         if let a = audio { try? FileManager.default.removeItem(at: directory.appendingPathComponent(a)) }
     }
 
+    private func audioFile(id: String) -> String? {
+        queue.sync {
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT audio_file FROM history WHERE id = ?", -1, &st, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(st) }
+            sqlite3_bind_text(st, 1, id, -1, Self.transient)
+            guard sqlite3_step(st) == SQLITE_ROW else { return nil }
+            return sqlite3_column_text(st, 0).map { String(cString: $0) }
+        }
+    }
+
     /// Deletes items older than `days` (0 = keep nothing, nil = keep forever) and their audio.
-    public func prune(olderThanDays days: Int?) {
-        guard let days else { return }
-        let cutoff = Date().addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970
-        let old = recent(limit: 100_000).filter { $0.createdAt.timeIntervalSince1970 < cutoff }
-        for item in old { delete(id: item.id) }
+    /// Returns how many entries were removed.
+    @discardableResult
+    public func prune(olderThanDays days: Int?, now: Date = Date()) -> Int {
+        guard let days else { return 0 }
+        let cutoff = now.addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970
+        let old: [(String, String?)] = rows("SELECT id, created_at, audio_file FROM history WHERE created_at < ?", cutoff)
+            .map { ($0.id, $0.audio) }
+        guard !old.isEmpty else { return 0 }
+        queue.sync {
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM history WHERE created_at < ?", -1, &st, nil) == SQLITE_OK else { return }
+            sqlite3_bind_double(st, 1, cutoff)
+            sqlite3_step(st)
+            sqlite3_finalize(st)
+        }
+        for case let (_, a?) in old { try? FileManager.default.removeItem(at: directory.appendingPathComponent(a)) }
+        return old.count
+    }
+
+    // MARK: storage maintenance
+
+    /// Runs a `SELECT id, created_at, audio_file …` query with one optional double parameter.
+    private func rows(_ sql: String, _ param: Double? = nil) -> [(id: String, created: Double, audio: String?)] {
+        queue.sync {
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(st) }
+            if let p = param { sqlite3_bind_double(st, 1, p) }
+            var out: [(String, Double, String?)] = []
+            while sqlite3_step(st) == SQLITE_ROW {
+                out.append((sqlite3_column_text(st, 0).map { String(cString: $0) } ?? "", sqlite3_column_double(st, 1),
+                            sqlite3_column_text(st, 2).map { String(cString: $0) }))
+            }
+            return out
+        }
+    }
+
+    private func clearAudio(ids: [String]) {
+        guard !ids.isEmpty else { return }
+        queue.sync {
+            try? exec("BEGIN;")
+            var st: OpaquePointer?
+            if sqlite3_prepare_v2(db, "UPDATE history SET audio_file = NULL WHERE id = ?", -1, &st, nil) == SQLITE_OK {
+                for id in ids {
+                    sqlite3_bind_text(st, 1, id, -1, Self.transient)
+                    sqlite3_step(st)
+                    sqlite3_reset(st)
+                }
+                sqlite3_finalize(st)
+            }
+            try? exec("COMMIT;")
+        }
+    }
+
+    public struct Usage: Equatable, Sendable {
+        /// history.sqlite plus its WAL / shared-memory files.
+        public var databaseBytes: Int64
+        public var audioBytes: Int64
+        public var audioFiles: Int
+        public var entries: Int
+    }
+
+    static func fileSize(_ url: URL) -> Int64 {
+        Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])).flatMap { $0.totalFileAllocatedSize ?? $0.fileSize } ?? 0)
+    }
+
+    /// Total size of everything under a directory (e.g. the speech models).
+    public static func directorySize(_ dir: URL) -> Int64 {
+        guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let u as URL in e where (try? u.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+            total += fileSize(u)
+        }
+        return total
+    }
+
+    public func usage() -> Usage {
+        let db = ["history.sqlite", "history.sqlite-wal", "history.sqlite-shm"]
+            .reduce(Int64(0)) { $0 + Self.fileSize(directory.appendingPathComponent($1)) }
+        let files = audioFilesOnDisk()
+        let entries = queue.sync { () -> Int in
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(self.db, "SELECT COUNT(*) FROM history", -1, &st, nil) == SQLITE_OK else { return 0 }
+            defer { sqlite3_finalize(st) }
+            return sqlite3_step(st) == SQLITE_ROW ? Int(sqlite3_column_int64(st, 0)) : 0
+        }
+        return Usage(databaseBytes: db, audioBytes: files.reduce(0) { $0 + $1.bytes }, audioFiles: files.count, entries: entries)
+    }
+
+    private func audioFilesOnDisk() -> [(rel: String, bytes: Int64, modified: Date)] {
+        let dir = directory.appendingPathComponent("audio")
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        let list = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? []
+        return list.compactMap { u in
+            guard let v = try? u.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return nil }
+            return ("audio/" + u.lastPathComponent, Self.fileSize(u), v.contentModificationDate ?? .distantPast)
+        }
+    }
+
+    public struct Retention: Equatable, Sendable {
+        /// Text history: days to keep (nil = forever).
+        public var textDays: Int?
+        /// Recordings: days to keep (nil = as long as the entry), independent of the text.
+        public var audioDays: Int?
+        /// Recordings: total size cap in bytes (nil = no cap); the oldest go first.
+        public var audioMaxBytes: Int64?
+        public init(textDays: Int?, audioDays: Int?, audioMaxBytes: Int64?) {
+            self.textDays = textDays; self.audioDays = audioDays; self.audioMaxBytes = audioMaxBytes
+        }
+    }
+
+    public struct MaintenanceReport: Equatable, Sendable {
+        public var entriesDeleted = 0
+        public var audioDeleted = 0
+        public var orphanFilesDeleted = 0
+        public var missingAudioCleared = 0
+        public var bytesFreed: Int64 = 0
+        public var vacuumed = false
+        public var changedAnything: Bool { entriesDeleted + audioDeleted + orphanFilesDeleted + missingAudioCleared > 0 || vacuumed }
+    }
+
+    /// Applies retention and size limits and repairs drift between the database and the audio folder.
+    /// Text history is never deleted to satisfy the audio cap: only recordings are.
+    /// - Parameters:
+    ///   - orphanGrace: audio files younger than this are never treated as orphans (a dictation may
+    ///     have written its WAV and not yet inserted its row).
+    ///   - forceVacuum: compact the database even if little was deleted ("clean up now").
+    @discardableResult
+    public func maintain(_ r: Retention, now: Date = Date(), orphanGrace: TimeInterval = 600,
+                         forceVacuum: Bool = false) -> MaintenanceReport {
+        var rep = MaintenanceReport()
+        let before = usage()
+        rep.entriesDeleted = prune(olderThanDays: r.textDays, now: now)
+
+        // Recordings: age limit, then size cap (oldest first).
+        var withAudio = rows("SELECT id, created_at, audio_file FROM history WHERE audio_file IS NOT NULL ORDER BY created_at ASC")
+        var drop: [(id: String, audio: String)] = []
+        var missing: [String] = []
+        var sizes: [String: Int64] = [:]
+        for row in withAudio {
+            guard let a = row.audio else { continue }
+            let url = directory.appendingPathComponent(a)
+            if !FileManager.default.fileExists(atPath: url.path) { missing.append(row.id); continue }
+            sizes[a] = Self.fileSize(url)
+        }
+        withAudio.removeAll { missing.contains($0.id) }
+        if let days = r.audioDays {
+            let cutoff = now.addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970
+            for row in withAudio where row.created < cutoff { drop.append((row.id, row.audio!)) }
+            withAudio.removeAll { $0.created < cutoff }
+        }
+        if let cap = r.audioMaxBytes {
+            var total = withAudio.reduce(Int64(0)) { $0 + (sizes[$1.audio!] ?? 0) }
+            var i = 0
+            while total > cap, i < withAudio.count {
+                let row = withAudio[i]
+                drop.append((row.id, row.audio!))
+                total -= sizes[row.audio!] ?? 0
+                i += 1
+            }
+        }
+        for d in drop { try? FileManager.default.removeItem(at: directory.appendingPathComponent(d.audio)) }
+        clearAudio(ids: drop.map(\.id) + missing)
+        rep.audioDeleted = drop.count
+        rep.missingAudioCleared = missing.count
+
+        // Files nobody references (left over from deleted entries, crashes, older versions).
+        let referenced = Set(rows("SELECT id, created_at, audio_file FROM history WHERE audio_file IS NOT NULL").compactMap(\.audio))
+        for f in audioFilesOnDisk() where !referenced.contains(f.rel) && now.timeIntervalSince(f.modified) > orphanGrace {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(f.rel))
+            rep.orphanFilesDeleted += 1
+        }
+
+        // Give deleted pages back to the file system: SQLite keeps them otherwise.
+        if rep.entriesDeleted > 0 || forceVacuum {
+            queue.sync {
+                var free: Int64 = 0, pages: Int64 = 0
+                var st: OpaquePointer?
+                if sqlite3_prepare_v2(db, "SELECT freelist_count, page_count FROM pragma_freelist_count, pragma_page_count", -1, &st, nil) == SQLITE_OK,
+                   sqlite3_step(st) == SQLITE_ROW {
+                    free = sqlite3_column_int64(st, 0); pages = sqlite3_column_int64(st, 1)
+                }
+                sqlite3_finalize(st)
+                if forceVacuum || (free > 64 && free * 5 > pages) {
+                    rep.vacuumed = (try? exec("VACUUM;")) != nil
+                }
+                try? exec("PRAGMA wal_checkpoint(TRUNCATE);")
+            }
+        }
+        let after = usage()
+        rep.bytesFreed = max(0, (before.databaseBytes + before.audioBytes) - (after.databaseBytes + after.audioBytes))
+        return rep
     }
 
     /// Consistent copy of the database (safe while in use).

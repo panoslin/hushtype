@@ -79,9 +79,41 @@ public enum TextInserter {
         })
     }
 
+    /// The key that produces "v" together with ⌘ in the current keyboard layout. Apps match ⌘V by
+    /// character, so on Dvorak, AZERTY variants, Colemak… the ANSI "V" position would send another
+    /// shortcut (Dvorak: ⌘K). "Dvorak – QWERTY ⌘" layouts are handled too: translation uses the ⌘ state.
+    public static func commandVKeyCode() -> CGKeyCode {
+        for source in [TISCopyCurrentKeyboardLayoutInputSource(), TISCopyCurrentASCIICapableKeyboardLayoutInputSource()] {
+            guard let src = source?.takeRetainedValue(),
+                  let raw = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { continue }
+            let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+            if let code = keyCode(producing: "v", layoutData: data) { return code }
+        }
+        return CGKeyCode(kVK_ANSI_V)
+    }
+
+    /// Searches a 'uchr' keyboard layout for the key that types `char` while ⌘ is held.
+    static func keyCode(producing char: Character, layoutData: Data) -> CGKeyCode? {
+        layoutData.withUnsafeBytes { buf -> CGKeyCode? in
+            guard let layout = buf.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return nil }
+            let cmd = UInt32((cmdKey >> 8) & 0xFF)
+            for code in 0..<UInt16(128) {
+                var dead: UInt32 = 0
+                var len = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let st = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown), cmd, UInt32(LMGetKbdType()),
+                                        OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, chars.count, &len, &chars)
+                if st == noErr, len == 1, String(utf16CodeUnits: chars, count: 1).lowercased() == String(char) {
+                    return CGKeyCode(code)
+                }
+            }
+            return nil
+        }
+    }
+
     static func sendCommandV() {
         let src = CGEventSource(stateID: .combinedSessionState)
-        let v = CGKeyCode(kVK_ANSI_V)
+        let v = commandVKeyCode()
         let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
         let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false)
         down?.flags = .maskCommand

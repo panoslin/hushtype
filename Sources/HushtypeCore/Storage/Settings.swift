@@ -76,6 +76,9 @@ public enum ProviderKind: String, Codable, Sendable, CaseIterable {
     case anthropicKey
     /// Hushtype Cloud / self-hosted proxy with a user token.
     case proxy
+    /// The user's own key for a third-party OpenAI-compatible service (DeepSeek, GLM, Kimi, Qwen,
+    /// Doubao, OpenAI, custom). See `LLMVendor`.
+    case openAICompatible
     /// No LLM: insert the local transcript as is.
     case offline
 }
@@ -90,9 +93,18 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
     /// Tap once to start, tap again to finish (default). Off: hold to talk.
     public var tapToToggle = true
     public var microphoneUID: String?
+    /// With a Bluetooth headset as the system input, record from the Mac's built-in mic instead
+    /// (keeps the headphones out of call mode). Off by default, like Typeless.
+    public var preferBuiltInMic = false
     public var provider: ProviderKind = .anthropicKey
     public var proxyURL: String = ""
     public var model: RewriteModel = .sonnet
+    /// Third-party service used when `provider == .openAICompatible`.
+    public var llmVendor: LLMVendor = .deepseek
+    /// Model id; empty = the vendor's default.
+    public var llmModel: String = ""
+    /// Base URL; empty = the vendor's default endpoint (required for `.custom`).
+    public var llmBaseURL: String = ""
     public var useSecondEngine = true
     public var memoryPolicy: MemoryPolicy = .automatic
     public var appearance: AppearanceMode = .system
@@ -111,6 +123,11 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
     /// nil = keep forever.
     public var historyDays: Int? = 30
     public var keepAudio = false
+    /// Recordings are kept this many days (nil = as long as their history entry), independently of
+    /// the text history.
+    public var audioDays: Int? = 7
+    /// Total space recordings may use, in MB (nil = no limit); the oldest recordings go first.
+    public var audioCapMB: Int? = 500
     public var hasOnboarded = false
     /// Bundle IDs where Hushtype never reads screen context (password managers are always excluded).
     public var contextExcluded: [String] = []
@@ -125,8 +142,8 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
     // Tolerant decoding: a field added in a later version (or removed) must not reset the user's
     // other settings, so every key is optional with the property default as fallback.
     enum CodingKeys: String, CodingKey {
-        case trigger, customHotkey, doubleTapHandsFree, tapToToggle, microphoneUID, provider, proxyURL, model, useSecondEngine, memoryPolicy, appearance, showInDock, muteWhileDictating,
-             sendContext, script, scriptPreference, dictionary, learnFromEdits, playSounds, soundTheme, historyDays, keepAudio, hasOnboarded, contextExcluded
+        case trigger, customHotkey, doubleTapHandsFree, tapToToggle, microphoneUID, preferBuiltInMic, provider, proxyURL, model, llmVendor, llmModel, llmBaseURL, useSecondEngine, memoryPolicy, appearance, showInDock, muteWhileDictating,
+             sendContext, script, scriptPreference, dictionary, learnFromEdits, playSounds, soundTheme, historyDays, keepAudio, audioDays, audioCapMB, hasOnboarded, contextExcluded
     }
 
     public init(from decoder: Decoder) throws {
@@ -138,9 +155,13 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
         doubleTapHandsFree = v(.doubleTapHandsFree, d.doubleTapHandsFree)
         tapToToggle = v(.tapToToggle, d.tapToToggle)
         microphoneUID = (try? c.decodeIfPresent(String.self, forKey: .microphoneUID)) ?? nil
+        preferBuiltInMic = v(.preferBuiltInMic, d.preferBuiltInMic)
         provider = v(.provider, d.provider)
         proxyURL = v(.proxyURL, d.proxyURL)
         model = v(.model, d.model)
+        llmVendor = v(.llmVendor, d.llmVendor)
+        llmModel = v(.llmModel, d.llmModel)
+        llmBaseURL = v(.llmBaseURL, d.llmBaseURL)
         useSecondEngine = v(.useSecondEngine, d.useSecondEngine)
         memoryPolicy = v(.memoryPolicy, d.memoryPolicy)
         appearance = v(.appearance, d.appearance)
@@ -157,6 +178,10 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
         let days = v(.historyDays, d.historyDays ?? -1)
         historyDays = days < 0 ? nil : days
         keepAudio = v(.keepAudio, d.keepAudio)
+        let ad = v(.audioDays, d.audioDays ?? -1)
+        audioDays = ad < 0 ? nil : ad
+        let cap = v(.audioCapMB, d.audioCapMB ?? -1)
+        audioCapMB = cap < 0 ? nil : cap
         hasOnboarded = v(.hasOnboarded, d.hasOnboarded)
         contextExcluded = v(.contextExcluded, d.contextExcluded)
     }
@@ -168,9 +193,13 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
         try c.encode(doubleTapHandsFree, forKey: .doubleTapHandsFree)
         try c.encode(tapToToggle, forKey: .tapToToggle)
         try c.encodeIfPresent(microphoneUID, forKey: .microphoneUID)
+        try c.encode(preferBuiltInMic, forKey: .preferBuiltInMic)
         try c.encode(provider, forKey: .provider)
         try c.encode(proxyURL, forKey: .proxyURL)
         try c.encode(model, forKey: .model)
+        try c.encode(llmVendor, forKey: .llmVendor)
+        try c.encode(llmModel, forKey: .llmModel)
+        try c.encode(llmBaseURL, forKey: .llmBaseURL)
         try c.encode(useSecondEngine, forKey: .useSecondEngine)
         try c.encode(memoryPolicy, forKey: .memoryPolicy)
         try c.encode(appearance, forKey: .appearance)
@@ -185,8 +214,26 @@ public struct HushtypeSettings: Codable, Sendable, Equatable {
         try c.encode(soundTheme, forKey: .soundTheme)
         try c.encode(historyDays ?? -1, forKey: .historyDays)
         try c.encode(keepAudio, forKey: .keepAudio)
+        try c.encode(audioDays ?? -1, forKey: .audioDays)
+        try c.encode(audioCapMB ?? -1, forKey: .audioCapMB)
         try c.encode(hasOnboarded, forKey: .hasOnboarded)
         try c.encode(contextExcluded, forKey: .contextExcluded)
+    }
+
+    /// Model and endpoint in effect for the third-party provider (defaults filled in).
+    public var effectiveLLMModel: String {
+        let m = llmModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return m.isEmpty ? llmVendor.preset.defaultModel : m
+    }
+    public var effectiveLLMBaseURL: String {
+        let u = llmBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return u.isEmpty ? llmVendor.preset.baseURL : u
+    }
+
+    /// What the storage maintenance enforces.
+    public var retention: HistoryStore.Retention {
+        HistoryStore.Retention(textDays: historyDays, audioDays: audioDays,
+                               audioMaxBytes: audioCapMB.map { Int64($0) * 1_000_000 })
     }
 
     public static let key = "hushtype.settings.v1"
@@ -236,7 +283,7 @@ public enum Secrets {
     /// Reads both secrets from the Keychain into memory. Call from a background task.
     public static func load() {
         var fresh: [String: String] = [:]
-        for account in ["anthropic-api-key", "proxy-token"] {
+        for account in ["anthropic-api-key", "proxy-token"] + LLMVendor.allCases.map(\.keychainAccount) {
             if let v = try? Keychain.read(service: service, account: account), !v.isEmpty { fresh[account] = v }
         }
         lock.lock(); cache = fresh; loaded = true; lock.unlock()
@@ -267,10 +314,14 @@ public enum Secrets {
         set { set("proxy-token", newValue) }
     }
 
+    /// The user's key for a third-party service (one Keychain item per vendor).
+    public static func llmKey(_ vendor: LLMVendor) -> String? { get(vendor.keychainAccount) }
+    public static func setLLMKey(_ vendor: LLMVendor, _ value: String?) { set(vendor.keychainAccount, value) }
+
     /// QA only: `--qa-key-file <path>` (a 0600 file) supplies the key without touching the
     /// Keychain, for unattended end-to-end tests.
     static let qaKey: String? = {
-        let a = CommandLine.arguments
+        let a = LaunchArgs.all
         guard let i = a.firstIndex(of: "--qa-key-file"), i + 1 < a.count,
               let k = try? String(contentsOfFile: a[i + 1], encoding: .utf8) else { return nil }
         let t = k.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -285,6 +336,11 @@ public enum Secrets {
         case .proxy:
             guard let url = URL(string: s.proxyURL), url.scheme == "https", let t = proxyToken else { return nil }
             return .proxy(baseURL: url, token: t)
+        case .openAICompatible:
+            guard let k = llmKey(s.llmVendor),
+                  let c = OpenAICompatible(vendor: s.llmVendor, baseURL: s.effectiveLLMBaseURL, apiKey: k,
+                                           model: s.effectiveLLMModel) else { return nil }
+            return .openAICompatible(c)
         case .offline:
             return nil
         }

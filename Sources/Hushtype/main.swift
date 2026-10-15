@@ -73,16 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { self?.updateStatusIcon(self?.panelModel.activity ?? .idle) }
         }
 
-        if CommandLine.arguments.contains("--qa-onboarding") {
+        if LaunchArgs.all.contains("--qa-onboarding") {
             Task { await app.prepareEngines() }
             showOnboarding()
-        } else if CommandLine.arguments.contains("--selftest") || (app.settings.hasOnboarded && app.permissions.allGranted) {
+        } else if LaunchArgs.all.contains("--selftest") || (app.settings.hasOnboarded && app.permissions.allGranted) {
             Task { await app.prepareEngines() }
         } else {
             showOnboarding()
         }
         startHotkeyWhenTrusted()
-        let args = CommandLine.arguments
+        let args = LaunchArgs.all
         if let i = args.firstIndex(of: "--qa-scroll-bench"), i + 1 < args.count {
             let section: SidebarSection = args[i + 1] == "dictionary" ? .dictionary : .home
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -96,7 +96,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = args.firstIndex(of: "--qa-open"), i + 1 < args.count {
             let m: [String: SidebarSection] = ["home": .home, "dictionary": .dictionary, "general": .general, "ai": .ai, "privacy": .privacy]
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                MainActor.assumeIsolated { self?.showMain(m[args[i + 1]] ?? .home); NSApp.activate(ignoringOtherApps: true) }
+                MainActor.assumeIsolated {
+                    self?.showMain(m[args[i + 1]] ?? .home); NSApp.activate(ignoringOtherApps: true)
+                    if args.contains("--qa-scroll-end") {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                            if let w = self?.mainWindow { QAScrollBench.scrollToEnd(in: w) }
+                        }
+                    }
+                }
             }
         }
         if let i = args.firstIndex(of: "--qa-mute-others"), i + 1 < args.count, let secs = Double(args[i + 1]) {

@@ -2,6 +2,7 @@ import AudioToolbox
 import AVFoundation
 import CoreAudio
 import Foundation
+import IOKit
 
 /// Captures the microphone as 16 kHz mono Float32. The engine is created on `start()` and torn
 /// down on `stop()`, so the mic indicator is only on while the user is actually dictating.
@@ -27,6 +28,14 @@ public final class AudioRecorder: @unchecked Sendable {
     private var samples: [Int16] = []
     private let lock = NSLock()
     private var lastLevel = Date.distantPast
+    private var peakValue: Float = 0
+
+    /// Loudest sample since `start()`. Exactly 0 after a second or more means the input delivers
+    /// digital silence: the mic is muted in hardware / System Settings, or the wrong device is chosen.
+    public var peak: Float { lock.lock(); defer { lock.unlock() }; return peakValue }
+
+    /// Digital silence, as opposed to a quiet room (which still has noise around 1e-4…1e-3).
+    public static func isDigitalSilence(peak: Float) -> Bool { peak < 1e-6 }
 
     /// Memory guard only — dictation length is meant to be unlimited in practice: 2 hours.
     public static let maxSeconds = 7200
@@ -41,7 +50,7 @@ public final class AudioRecorder: @unchecked Sendable {
     /// - Parameter useEngine: testing only — record through AVAudioEngine without voice processing.
     public func start(deviceUID: String? = nil, echoCancel: Bool = false, useEngine: Bool = false) throws {
         stopEngine()
-        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+        lock.lock(); samples.removeAll(keepingCapacity: true); peakValue = 0; lock.unlock()
         if !echoCancel && !useEngine {
             try control.sync { try startQueue(deviceUID: deviceUID) }
             return
@@ -220,7 +229,10 @@ public final class AudioRecorder: @unchecked Sendable {
     /// 16 kHz mono samples from either capture path.
     private func append(_ chunk: UnsafeBufferPointer<Float>) {
         let n = chunk.count
+        var p: Float = 0
+        for v in chunk { p = max(p, abs(v)) }
         lock.lock()
+        peakValue = max(peakValue, p)
         if samples.count < Self.maxSeconds * 16000 {
             samples.append(contentsOf: chunk.map { Int16(max(-1, min(1, $0)) * 32767) })
         }
@@ -289,6 +301,43 @@ public enum AudioDevices {
         var size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &t) == noErr else { return false }
         return t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    /// The Mac's own microphone (MacBook / iMac / Studio Display built-in), if there is one.
+    public static func builtInInputUID() -> String? {
+        allDeviceIDs().first { id in
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var t: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            return AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &t) == noErr
+                && t == kAudioDeviceTransportTypeBuiltIn && inputChannelCount(id) > 0
+        }.flatMap { string($0, kAudioDevicePropertyDeviceUID) }
+    }
+
+    /// MacBook lid closed (clamshell with an external display): the built-in mic hears nothing useful.
+    public static var isLidClosed: Bool {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard svc != 0 else { return false }
+        defer { IOObjectRelease(svc) }
+        let v = IORegistryEntryCreateCFProperty(svc, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+        return (v as? Bool) ?? false
+    }
+
+    /// Which microphone to record from. With "prefer the built-in mic" on and the system default
+    /// input being a Bluetooth headset, the Mac's own mic is used instead, so the headphones never
+    /// switch into call mode (music keeps playing in full quality, no start-sound juggling). An
+    /// explicitly chosen device is always respected.
+    public static func preferredInput(chosen: String?, preferBuiltIn: Bool, defaultIsBluetooth: Bool,
+                                      lidClosed: Bool, builtIn: String?) -> String? {
+        guard chosen == nil, preferBuiltIn, defaultIsBluetooth, !lidClosed, let b = builtIn else { return chosen }
+        return b
+    }
+
+    public static func preferredInput(chosen: String?, preferBuiltIn: Bool) -> String? {
+        guard chosen == nil, preferBuiltIn else { return chosen }
+        return preferredInput(chosen: chosen, preferBuiltIn: preferBuiltIn, defaultIsBluetooth: isBluetoothInput(uid: nil),
+                              lidClosed: isLidClosed, builtIn: builtInInputUID())
     }
 
     static func defaultInputID() -> AudioDeviceID? {

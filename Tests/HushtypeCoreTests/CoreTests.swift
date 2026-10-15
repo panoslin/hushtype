@@ -198,6 +198,10 @@ import CoreText
         #expect(!EditLearner.looksLikeCorrection(inserted: "我在用 Clawd Code 写代码", edited: "我在用 Clawd Code 写代码"))
         #expect(EditLearner.looksLikeCorrection(inserted: "部署到 cooper netties 上", edited: "部署到 Kubernetes 上"))
         #expect(!EditLearner.looksLikeCorrection(inserted: "短句", edited: "这是一个完全重写过的很长很长的句子，和原来没有关系"))
+        // the next message in a chat / terminal box is not an edit of the dictated one
+        #expect(!EditLearner.looksLikeCorrection(inserted: "还得再上一版本", edited: "型生成的那版本"))
+        #expect(EditLearner.isTerminal(bundleID: "com.apple.Terminal"))
+        #expect(!EditLearner.isTerminal(bundleID: "com.apple.TextEdit"))
     }
 }
 

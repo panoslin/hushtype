@@ -9,7 +9,8 @@ Native macOS voice typing: press fn, speak, and cleaned-up text appears at the c
 - **Small** — ~26 MB download, native Swift, no Electron.
 - **Light** — ~600 MB with all models loaded, ~118 MB once they unload when idle. No GPU.
 - **Private** — speech recognition runs on your Mac (SenseVoice + Whisper); audio is never uploaded.
-- **Smart, optional** — Claude Sonnet 5.5 removes filler words, fixes self-corrections and punctuation. Or stay fully offline.
+- **Smart, optional** — an LLM removes filler words, fixes self-corrections and punctuation: Claude Sonnet 5.5 by default, or your own key for DeepSeek, Zhipu GLM, Kimi, Qwen, Doubao, OpenAI or any OpenAI-compatible endpoint. Or stay fully offline.
+- **Tidy** — history and recordings clean themselves up (recordings: 7 days / 500 MB by default).
 
 ## Watch the 1-minute tour
 
@@ -30,6 +31,8 @@ Download the DMG from [Releases](https://github.com/panoslin/hushtype/releases) 
 ```bash
 Scripts/build_app.sh && Scripts/test.sh && Scripts/package_dmg.sh
 ```
+
+`QA=1 Scripts/build_app.sh` builds a test copy in `.build/qa-app/` that accepts the QA launch arguments; the release app ignores them.
 
 ## License
 

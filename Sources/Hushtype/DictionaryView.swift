@@ -115,12 +115,13 @@ struct DictionaryTab: View {
         }
     }
 
-    /// Finding Chinese names needs Claude, which means sending note excerpts off the Mac: ask first.
+    /// Finding Chinese names needs the cleanup LLM, which means sending note excerpts off the Mac: ask first.
     private func allowCloudScan(_ what: String) -> Bool {
         let a = NSAlert()
-        a.messageText = String(localized: "用 Claude 帮你找专有名词？")
-        a.informativeText = String(localized: "会把\(what)的部分文字（最多约 15 万字）发送给 Claude 识别人名、产品名等，不会保存。\n只在本机识别的话，只能找出英文名词。")
-        a.addButton(withTitle: String(localized: "用 Claude 识别"))
+        let service = app.cleanupServiceName
+        a.messageText = String(localized: "用 \(service) 帮你找专有名词？")
+        a.informativeText = String(localized: "会把\(what)的部分文字（最多约 15 万字）发送给 \(service) 识别人名、产品名等，不会保存。\n只在本机识别的话，只能找出英文名词。")
+        a.addButton(withTitle: String(localized: "用 \(service) 识别"))
         a.addButton(withTitle: String(localized: "只在本机识别"))
         return a.runModal() == .alertFirstButtonReturn
     }

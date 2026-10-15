@@ -43,11 +43,21 @@ final class AppModel: ObservableObject {
     /// Whether models are currently in memory (for the status line only).
     @Published private(set) var modelsResident = false
     private var idleTimer: Timer?
+    private var storageTimer: Timer?
+    private var maintaining = false
+    /// Disk space used by history, recordings and models (filled by `refreshStorageUsage()`).
+    @Published private(set) var storage: StorageUsage?
+
+    struct StorageUsage: Equatable {
+        var history: HistoryStore.Usage
+        var modelsBytes: Int64
+        var logsBytes: Int64
+    }
     private var pressure: DispatchSourceMemoryPressure?
 
     /// QA: `--qa-demo` runs on sample settings, dictionary and history (for README screenshots) and
     /// never touches the user's own data.
-    static let demo = CommandLine.arguments.contains("--qa-demo")
+    static let demo = LaunchArgs.all.contains("--qa-demo")
     static let defaults: UserDefaults = demo ? UserDefaults(suiteName: "app.hushtype.demo")! : .standard
 
     static var supportDir: URL {
@@ -74,7 +84,9 @@ final class AppModel: ObservableObject {
         if Self.demo { DemoData.fill(history) }
         history.prune(olderThanDays: s.historyDays)
         lastResult = history.recent(limit: 1).first
+        Task { await maintainStorage(reason: "launch") }
         startResourceManagement()
+        startStorageMaintenance()
         loadSecrets()
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
@@ -89,7 +101,7 @@ final class AppModel: ObservableObject {
 
     /// Light / dark / follow system. `--qa-appearance light|dark` overrides for screenshots.
     func applyAppearance() {
-        let a = CommandLine.arguments
+        let a = LaunchArgs.all
         var mode = settings.appearance
         if let i = a.firstIndex(of: "--qa-appearance"), i + 1 < a.count, let m = AppearanceMode(rawValue: a[i + 1]) { mode = m }
         switch mode {
@@ -108,6 +120,14 @@ final class AppModel: ObservableObject {
 
     /// Models are installed; they may or may not be in memory right now.
     var isReady: Bool { engineState == .ready }
+
+    /// Who the text goes to, for consent dialogs ("Claude", "DeepSeek", …).
+    var cleanupServiceName: String {
+        switch settings.provider {
+        case .openAICompatible: return settings.llmVendor == .custom ? (URL(string: settings.effectiveLLMBaseURL)?.host ?? settings.llmVendor.title) : settings.llmVendor.title
+        case .anthropicKey, .proxy, .offline: return "Claude"
+        }
+    }
 
     var rewriteConfigured: Bool { settings.provider == .offline || rewriter.backend != nil }
 
@@ -128,7 +148,8 @@ final class AppModel: ObservableObject {
 
     private func settingsChanged(_ old: HushtypeSettings) {
         settings.save(Self.defaults)
-        if old.provider != settings.provider || old.proxyURL != settings.proxyURL || old.model != settings.model {
+        if old.provider != settings.provider || old.proxyURL != settings.proxyURL || old.model != settings.model
+            || old.llmVendor != settings.llmVendor || old.llmModel != settings.llmModel || old.llmBaseURL != settings.llmBaseURL {
             reloadBackend()
         }
         if old.useSecondEngine != settings.useSecondEngine {
@@ -141,7 +162,7 @@ final class AppModel: ObservableObject {
         }
         if old.appearance != settings.appearance { applyAppearance() }
         if old.showInDock != settings.showInDock { onDockPolicyChange?() }
-        if old.historyDays != settings.historyDays { history.prune(olderThanDays: settings.historyDays) }
+        if old.retention != settings.retention { Task { await maintainStorage(reason: "settings") } }
     }
 
     // MARK: engines
@@ -202,6 +223,56 @@ final class AppModel: ObservableObject {
         modelsResident = engines.isRunning
     }
 
+    // MARK: storage
+
+    /// Enforces history / recording retention, the recording size cap, removes orphaned recordings,
+    /// compacts the database and trims the log folder. Runs at launch, hourly, after wake and when a
+    /// retention setting changes, off the main thread.
+    @discardableResult
+    func maintainStorage(reason: String, force: Bool = false) async -> HistoryStore.MaintenanceReport? {
+        guard !maintaining else { return nil }
+        maintaining = true
+        defer { maintaining = false }
+        let retention = settings.retention
+        let store = history
+        let rep = await Task.detached(priority: .utility) { () -> HistoryStore.MaintenanceReport in
+            let r = store.maintain(retention, forceVacuum: force)
+            Log.trimDirectory()
+            return r
+        }.value
+        if rep.changedAnything {
+            Log.info("storage (\(reason)): \(rep.entriesDeleted) entries, \(rep.audioDeleted) recordings, \(rep.orphanFilesDeleted) orphan files removed, \(rep.missingAudioCleared) missing refs cleared, \(rep.bytesFreed / 1_000_000) MB freed\(rep.vacuumed ? ", vacuumed" : "")")
+            if rep.entriesDeleted > 0 { lastResult = history.recent(limit: 1).first }
+        }
+        await refreshStorageUsage()
+        return rep
+    }
+
+    func refreshStorageUsage() async {
+        let store = history, modelsDir = models.root
+        let logs = Log.url.deletingLastPathComponent()
+        let u = await Task.detached(priority: .utility) {
+            StorageUsage(history: store.usage(), modelsBytes: HistoryStore.directorySize(modelsDir),
+                         logsBytes: HistoryStore.directorySize(logs))
+        }.value
+        storage = u
+    }
+
+    private func startStorageMaintenance() {
+        let t = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.maintainStorage(reason: "hourly") }
+        }
+        t.tolerance = 300
+        RunLoop.main.add(t, forMode: .common)
+        storageTimer = t
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            // Let the system settle after wake before touching the disk.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                Task { @MainActor in await self?.maintainStorage(reason: "wake") }
+            }
+        }
+    }
+
     // MARK: memory
 
     private func startResourceManagement() {
@@ -227,7 +298,7 @@ final class AppModel: ObservableObject {
 
     /// QA hook: `--qa-idle <seconds>` overrides the idle-release threshold.
     static let qaIdleSeconds: TimeInterval? = {
-        let a = CommandLine.arguments
+        let a = LaunchArgs.all
         guard let i = a.firstIndex(of: "--qa-idle"), i + 1 < a.count else { return nil }
         return TimeInterval(a[i + 1])
     }()

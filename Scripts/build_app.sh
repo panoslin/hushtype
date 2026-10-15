@@ -7,12 +7,15 @@ cd "$ROOT"
 VERSION="${HUSHTYPE_VERSION:-0.1.0}"
 BUILD="${HUSHTYPE_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="$ROOT/dist/Hushtype.app"
+# QA=1: test build with the QA launch arguments compiled in (never shipped), in .build/qa-app/
+FLAGS=()
+if [ "${QA:-0}" = 1 ]; then FLAGS=(-Xswiftc -DHUSHTYPE_QA); APP="$ROOT/.build/qa-app/Hushtype QA.app"; fi
 
-swift build -c release --product Hushtype
-swift build -c release --product hushtype-engine
+swift build -c release --product Hushtype ${FLAGS[@]+"${FLAGS[@]}"}
+swift build -c release --product hushtype-engine ${FLAGS[@]+"${FLAGS[@]}"}
 BIN="$(swift build -c release --show-bin-path)"
 
-case "$APP" in "$ROOT"/dist/*) ;; *) echo "refusing to touch $APP" >&2; exit 1;; esac
+case "$APP" in "$ROOT"/dist/*|"$ROOT"/.build/qa-app/*) ;; *) echo "refusing to touch $APP" >&2; exit 1;; esac
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN/Hushtype" "$APP/Contents/MacOS/Hushtype"

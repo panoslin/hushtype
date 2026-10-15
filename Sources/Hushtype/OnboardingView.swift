@@ -45,7 +45,7 @@ struct OnboardingView: View {
         .onReceive(timer) { _ in app.refreshPermissions() }
         .onAppear {
             Task { await app.prepareEngines() }
-            let a = CommandLine.arguments
+            let a = LaunchArgs.all
             if let i = a.firstIndex(of: "--qa-onboarding-step"), i + 1 < a.count, let n = Int(a[i + 1]) { step = n }
         }
     }
@@ -155,12 +155,13 @@ struct OnboardingView: View {
 
     private var prepare: some View {
         VStack(alignment: .leading, spacing: 12) {
-            stepTitle(String(localized: "整理服务和语音模型"), String(localized: "语音识别在本机完成；整理（去口头禅、加标点、排版）交给 Claude。"))
+            stepTitle(String(localized: "整理服务和语音模型"), String(localized: "语音识别在本机完成；整理（去口头禅、加标点、排版）交给大模型，默认 Claude。"))
             card {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("", selection: $app.settings.provider) {
                         Text(String(localized: "我的 Anthropic API key")).tag(ProviderKind.anthropicKey)
                         Text("Hushtype Cloud").tag(ProviderKind.proxy)
+                        Text(String(localized: "其他服务商")).tag(ProviderKind.openAICompatible)
                         Text(String(localized: "先不整理")).tag(ProviderKind.offline)
                     }
                     .pickerStyle(.segmented).labelsHidden()
@@ -178,6 +179,8 @@ struct OnboardingView: View {
                         Text(String(localized: "key 只存在本机钥匙串。日常用量每月通常只要几美元。")).font(.system(size: 12)).foregroundStyle(.secondary)
                     } else if app.settings.provider == .proxy {
                         Text(String(localized: "在 设置 › 整理与模型 里填写服务地址和令牌。")).font(.system(size: 12)).foregroundStyle(.secondary)
+                    } else if app.settings.provider == .openAICompatible {
+                        Text(String(localized: "DeepSeek、智谱 GLM、Kimi、通义千问、豆包、OpenAI 或其他 OpenAI 兼容服务：完成引导后在 设置 › 整理服务 里选服务商、模型并填写 API key。")).font(.system(size: 12)).foregroundStyle(.secondary)
                     } else {
                         Text(String(localized: "只插入本地识别的原文，不删口头禅、不排版。之后随时可以开。")).font(.system(size: 12)).foregroundStyle(.secondary)
                     }

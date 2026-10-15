@@ -171,6 +171,14 @@ case "mic-ab":
     }
     print(String(format: "queue %.2fs rms %.4f | engine %.2fs rms %.4f | correlation %.3f at lag %d ms",
                  Double(a.count) / 16000, rms(a), Double(b.count) / 16000, rms(b), best.r, best.lag / 16))
+case "export-backup":
+    // hushtype-cli export-backup <file.hushtypebackup> : same as Settings › Privacy › Export (no API key)
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Hushtype")
+    let settings = HushtypeSettings.load(UserDefaults(suiteName: "app.hushtype.Hushtype")!)
+    let history = try HistoryStore(directory: support.appendingPathComponent("History"))
+    let out = URL(fileURLWithPath: args[2])
+    try DataMigration.export(to: out, settings: settings, history: history, supportDir: support, includeAudio: settings.keepAudio)
+    print("exported", out.path, "dictionary", settings.dictionary.count, "audio", settings.keepAudio)
 case "long":
     // hushtype-cli long <models-dir> <audio> <out.txt> : full pipeline on one long recording, with timings.
     let models = URL(fileURLWithPath: args[2])

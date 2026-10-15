@@ -41,6 +41,12 @@ struct GeneralTab: View {
                     Text(String(localized: "系统默认")).tag(String?.none)
                     ForEach(mics) { Text($0.name).tag(Optional($0.uid)) }
                 }
+                if app.settings.microphoneUID == nil {
+                    Toggle(isOn: $app.settings.preferBuiltInMic) {
+                        Text(String(localized: "戴蓝牙耳机时改用 Mac 内置麦克风"))
+                        Text(String(localized: "耳机不会切到通话模式，音乐保持原音质；合盖时仍用耳机麦克风。"))
+                    }
+                }
                 Toggle(String(localized: "开始和结束时播放提示音"), isOn: $app.settings.playSounds)
                 Toggle(String(localized: "录音时静音其他声音（音乐、视频）"), isOn: $app.settings.muteWhileDictating)
             }
@@ -117,11 +123,16 @@ struct AITab: View {
             Section(String(localized: "整理服务")) {
                 Picker(String(localized: "来源"), selection: $app.settings.provider) {
                     Text(String(localized: "我的 Anthropic API key")).tag(ProviderKind.anthropicKey)
+                    Text(String(localized: "其他模型服务商（DeepSeek、智谱、Kimi、通义、豆包、OpenAI…）")).tag(ProviderKind.openAICompatible)
                     Text(String(localized: "Hushtype Cloud / 自建代理")).tag(ProviderKind.proxy)
                     Text(String(localized: "离线（不整理，只用本地识别）")).tag(ProviderKind.offline)
                 }
                 switch app.settings.provider {
                 case .anthropicKey:
+                    Picker(String(localized: "模型"), selection: $app.settings.model) {
+                        Text(String(localized: "Claude Sonnet 5.5（推荐，最准）")).tag(RewriteModel.sonnet)
+                        Text(String(localized: "Claude Haiku 5.5（更快更便宜，整理较弱）")).tag(RewriteModel.haiku)
+                    }
                     SecureField("API key（sk-ant-…）", text: $key, prompt: Text(Secrets.anthropicKey == nil ? String(localized: "粘贴 API key") : String(localized: "已保存，粘贴新的可替换")))
                         .onSubmit(saveKey)
                     HStack {
@@ -136,6 +147,8 @@ struct AITab: View {
                     TextField(String(localized: "服务地址（https://…）"), text: $app.settings.proxyURL)
                     SecureField(String(localized: "访问令牌"), text: $token, prompt: Text(Secrets.proxyToken == nil ? String(localized: "粘贴令牌") : String(localized: "已保存")))
                     Button(String(localized: "保存令牌")) { Secrets.proxyToken = token; token = ""; app.reloadBackend() }.disabled(token.isEmpty)
+                case .openAICompatible:
+                    ThirdPartyProviderFields(app: app, onSaved: test)
                 case .offline:
                     Text(String(localized: "不联网。识别结果原样插入，不删口头禅、不排版。")).font(.callout).foregroundStyle(.secondary)
                 }
@@ -167,12 +180,108 @@ struct AITab: View {
                 let r = try await app.rewriter.rewrite(system: RewritePrompt.system(script: .simplified, dictionary: [], twoHypotheses: false),
                                                        user: RewritePrompt.user(primary: String(localized: "嗯测试一下呃这个连接"), secondary: nil, context: nil),
                                                        source: String(localized: "嗯测试一下呃这个连接"))
-                testResult = String(localized: "✓ 可用（\(String(format: "%.1f", r.seconds)) 秒）：\(r.text)")
+                let label = app.rewriter.backend?.label ?? ""
+                testResult = r.outcome == .fallback
+                    ? String(localized: "⚠︎ 连接成功，但这个模型的整理结果不可用（已退回原文）。换一个模型试试。")
+                    : String(localized: "✓ 可用（\(label)，\(String(format: "%.1f", r.seconds)) 秒）：\(r.text)")
             } catch {
                 testResult = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             }
             testing = false
         }
+    }
+}
+
+/// Provider, model, endpoint and key for a third-party OpenAI-compatible service.
+struct ThirdPartyProviderFields: View {
+    @ObservedObject var app: AppModel
+    var onSaved: () -> Void
+    @Local private var key = ""
+
+    private var vendor: LLMVendor { app.settings.llmVendor }
+    private var preset: LLMPreset { vendor.preset }
+    private var urlValid: Bool { OpenAICompatible.normalizedBaseURL(app.settings.effectiveLLMBaseURL) != nil }
+
+    var body: some View {
+        Picker(String(localized: "服务商"), selection: Binding(get: { app.settings.llmVendor }, set: { v in
+            guard v != app.settings.llmVendor else { return }
+            // A model id or endpoint only makes sense for the vendor it was typed for.
+            app.settings.llmModel = ""
+            app.settings.llmBaseURL = ""
+            app.settings.llmVendor = v
+            key = ""
+        })) {
+            ForEach(LLMVendor.allCases) { Text($0.title).tag($0) }
+        }
+        LabeledContent(String(localized: "模型")) {
+            HStack(spacing: 6) {
+                TextField("", text: $app.settings.llmModel,
+                          prompt: Text(preset.defaultModel.isEmpty ? String(localized: "模型 ID") : preset.defaultModel))
+                    .labelsHidden()
+                if !preset.models.isEmpty {
+                    Menu {
+                        ForEach(preset.models, id: \.self) { m in Button(m) { app.settings.llmModel = m } }
+                    } label: { Image(systemName: "chevron.down") }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help(String(localized: "常用模型"))
+                } else if !preset.alternateBaseURLs.isEmpty {
+                    Menu {} label: { Image(systemName: "chevron.down") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().hidden()
+                }
+            }
+        }
+        LabeledContent(String(localized: "服务地址")) {
+            HStack(spacing: 6) {
+                TextField("", text: $app.settings.llmBaseURL,
+                          prompt: Text(preset.baseURL.isEmpty ? "https://…/v1" : preset.baseURL))
+                    .labelsHidden()
+                if !preset.alternateBaseURLs.isEmpty {
+                    Menu {
+                        ForEach([preset.baseURL] + preset.alternateBaseURLs, id: \.self) { u in
+                            Button(u) { app.settings.llmBaseURL = u == preset.baseURL ? "" : u }
+                        }
+                    } label: { Image(systemName: "chevron.down") }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help(String(localized: "其他地区的官方地址"))
+                } else if !preset.models.isEmpty {
+                    // Same right edge as the model field above.
+                    Menu {} label: { Image(systemName: "chevron.down") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().hidden()
+                }
+            }
+        }
+        if !urlValid {
+            Label(String(localized: "服务地址必须以 https:// 开头（不支持 http）"), systemImage: "exclamationmark.triangle.fill")
+                .font(.callout).foregroundStyle(.orange)
+        }
+        if vendor == .doubao {
+            Text(String(localized: "豆包也可以填你在火山方舟创建的推理接入点 ID（ep-…）作为模型。"))
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        SecureField("API key", text: $key,
+                    prompt: Text(Secrets.llmKey(vendor) == nil ? String(localized: "粘贴 API key") : String(localized: "已保存，粘贴新的可替换")))
+            .onSubmit(save)
+        HStack {
+            Button(String(localized: "保存"), action: save).disabled(key.isEmpty)
+            if let page = preset.keyPage, let url = URL(string: page) {
+                Link(String(localized: "获取 API key"), destination: url)
+            }
+            Spacer()
+            if Secrets.llmKey(vendor) != nil {
+                Button(String(localized: "删除已保存的 key"), role: .destructive) { Secrets.setLLMKey(vendor, nil); app.reloadBackend() }
+            }
+        }
+        Text(String(localized: "识别出的文字（和你允许的光标前后文字）会发送给所选服务商，并受它的隐私政策约束；密钥和密码等敏感内容会先在本机隐去。Hushtype Cloud 只支持 Claude。"))
+            .font(.callout).foregroundStyle(.secondary)
+    }
+
+    private func save() {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return }
+        Secrets.setLLMKey(vendor, k)
+        key = ""
+        app.reloadBackend()
+        onSaved()
     }
 }
 
@@ -224,7 +333,7 @@ struct PrivacyTab: View {
                 }
             }
             Section(String(localized: "从你的修改中学习")) {
-                Text(String(localized: "插入后你改了某个词时，会把改动前后的这一小段发给 Claude（Haiku），判断要不要记进词典；不发送整篇内容。"))
+                Text(String(localized: "插入后你改了某个词时，会把改动前后的这一小段发给你选的整理服务，判断要不要记进词典；不发送整篇内容。"))
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section(String(localized: "本地保存")) {
@@ -234,8 +343,32 @@ struct PrivacyTab: View {
                     Text(String(localized: "30 天")).tag(Int?.some(30))
                     Text(String(localized: "永久")).tag(Int?.none)
                 }
+                if app.settings.historyDays == nil {
+                    Label(String(localized: "永久保留时历史会一直增长（每天几百 KB 到几 MB）；录音仍受下面的期限和空间上限约束。"),
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
+                }
                 Toggle(String(localized: "同时保存录音（用于回听）"), isOn: $app.settings.keepAudio)
-                Button(String(localized: "立即清空全部历史和录音"), role: .destructive) { app.history.deleteAll(); app.lastResult = nil }
+                Picker(String(localized: "录音保留"), selection: $app.settings.audioDays) {
+                    Text(String(localized: "1 天")).tag(Int?.some(1))
+                    Text(String(localized: "7 天")).tag(Int?.some(7))
+                    Text(String(localized: "30 天")).tag(Int?.some(30))
+                    Text(String(localized: "和文字历史一样久")).tag(Int?.none)
+                }
+                Picker(String(localized: "录音最多占用"), selection: $app.settings.audioCapMB) {
+                    Text("200 MB").tag(Int?.some(200))
+                    Text("500 MB").tag(Int?.some(500))
+                    Text("1 GB").tag(Int?.some(1000))
+                    Text("5 GB").tag(Int?.some(5000))
+                    Text(String(localized: "不限制")).tag(Int?.none)
+                }
+                Text(String(localized: "超出期限或空间上限时，先删最旧的录音；文字历史不受影响。每小时和唤醒后自动检查。"))
+                    .font(.callout).foregroundStyle(.secondary)
+                StorageUsageRow(app: app)
+                Button(String(localized: "立即清空全部历史和录音"), role: .destructive) {
+                    app.history.deleteAll(); app.lastResult = nil
+                    Task { await app.maintainStorage(reason: "clear all", force: true) }
+                }
                 Button(String(localized: "清空从我的修改中学到的习惯（\(app.corrections.all.count + app.corrections.allLiked.count) 条）"), role: .destructive) {
                     app.corrections.clear()
                     app.objectWillChange.send()
@@ -295,6 +428,49 @@ struct PrivacyTab: View {
         } catch {
             migrationNote = String(localized: "导入失败：\((error as? LocalizedError)?.errorDescription ?? "\(error)")")
         }
+    }
+}
+
+/// "Storage used" line with a clean-up button.
+struct StorageUsageRow: View {
+    @ObservedObject var app: AppModel
+    @Local private var cleaning = false
+    @Local private var note: String?
+
+    static func size(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+
+    var body: some View {
+        LabeledContent(String(localized: "占用空间")) {
+            VStack(alignment: .trailing, spacing: 3) {
+                if let u = app.storage {
+                    Text(String(localized: "文字历史 \(Self.size(u.history.databaseBytes))（\(u.history.entries) 条）"))
+                    Text(String(localized: "录音 \(Self.size(u.history.audioBytes))（\(u.history.audioFiles) 个）"))
+                    Text(String(localized: "语音模型 \(Self.size(u.modelsBytes)) · 日志 \(Self.size(u.logsBytes))"))
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+        }
+        HStack {
+            Button(cleaning ? String(localized: "清理中…") : String(localized: "立即清理")) {
+                cleaning = true
+                note = nil
+                Task {
+                    let r = await app.maintainStorage(reason: "manual", force: true)
+                    cleaning = false
+                    if let r {
+                        note = r.audioDeleted + r.orphanFilesDeleted + r.entriesDeleted == 0
+                            ? String(localized: "没有需要清理的内容，已压缩数据库")
+                            : String(localized: "已删除 \(r.entriesDeleted) 条过期历史、\(r.audioDeleted + r.orphanFilesDeleted) 个录音，释放 \(Self.size(r.bytesFreed))")
+                    }
+                }
+            }
+            .disabled(cleaning)
+            if let n = note { Text(n).font(.callout).foregroundStyle(.secondary) }
+            Spacer()
+        }
+        .onAppear { Task { await app.refreshStorageUsage() } }
     }
 }
 
@@ -370,7 +546,7 @@ enum InterfaceLanguage: String, CaseIterable {
         let url = Bundle.main.bundleURL
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.createsNewApplicationInstance = true
-        cfg.arguments = Array(CommandLine.arguments.dropFirst())
+        cfg.arguments = Array(LaunchArgs.all.dropFirst())
         NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }

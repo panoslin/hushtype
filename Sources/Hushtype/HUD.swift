@@ -12,6 +12,8 @@ enum HUDPhase: Equatable {
     case error(String)
     /// A cancelled dictation whose text was still recognized and saved; offers a Copy button.
     case saved(String)
+    /// Something was learned automatically; offers an Undo button (see `HUDModel.undo`).
+    case learned(String)
     /// The text had nowhere to go; it is about to fly to the menu bar.
     case noField
 }
@@ -23,6 +25,10 @@ final class HUDModel: ObservableObject {
     var parkReason = String(localized: "没找到输入框 · 已收进菜单栏")
     /// Another app (a call or meeting) is using the microphone: the other side hears the dictation.
     @Published var inCall = false
+    /// The microphone has delivered nothing but zeros so far (muted, or the wrong device).
+    @Published var micSilent = false
+    /// Undo for the last automatic change announced by `.learned` (e.g. a term added to the dictionary).
+    var undo: (() -> Void)?
     /// When the current recording started (drives the timecode).
     var recordingStarted = Date()
     /// Seconds from release to insertion, shown on `.done`.
@@ -83,6 +89,10 @@ struct HUDView: View {
                 Text(String(localized: "通话中 · 未静音时对方能听到")).font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
                     .lineLimit(1).truncationMode(.tail).frame(maxWidth: 300, alignment: .leading)
             }
+            if model.micSilent {
+                Text(String(localized: "麦克风没有声音 · 检查是否静音或选错设备")).font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+                    .lineLimit(1).truncationMode(.tail).frame(maxWidth: 300, alignment: .leading)
+            }
             if handsFree {
                 Button(action: onCancel) {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(DS.ink3)
@@ -121,6 +131,23 @@ struct HUDView: View {
                     .background(Capsule().fill(Color.accentColor))
             }
             .buttonStyle(.plain)
+        case .learned(let msg):
+            Text("✓").foregroundStyle(DS.ok)
+            Text(msg).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.tail).frame(maxWidth: 320, alignment: .leading)
+            if model.undo != nil {
+                Button {
+                    model.undo?()
+                    model.undo = nil
+                    model.lastLatency = nil
+                    model.phase = .done(String(localized: "已撤销"))
+                } label: {
+                    Text(String(localized: "撤销")).font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor))
+                }
+                .buttonStyle(.plain)
+            }
         case .error(let msg):
             Circle().fill(DS.warn).frame(width: 7, height: 7)
             Text(msg).font(.system(size: 12, weight: .medium))
