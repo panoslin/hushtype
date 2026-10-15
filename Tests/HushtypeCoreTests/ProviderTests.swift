@@ -5,7 +5,7 @@ import Testing
 /// Request building and response parsing for every cleanup provider.
 @Suite struct ProviderTests {
     static func config(_ v: LLMVendor, model: String? = nil, base: String? = nil) -> OpenAICompatible {
-        OpenAICompatible(vendor: v, baseURL: base ?? (v == .custom ? "https://llm.example.com/v1" : v.preset.baseURL), apiKey: "test-key-0123456789",
+        OpenAICompatible(vendor: v, baseURL: base ?? (v == .custom ? "https://llm.example.com/v1" : v.preset.baseURL), apiKey: "test-key-0123456789",  // gitleaks:allow — fake test key
                          model: model ?? (v == .custom ? "custom-model" : v.preset.defaultModel))!
     }
 
@@ -164,7 +164,7 @@ import Testing
             _ = try rw.parse(data: Data(#"{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}"#.utf8), status: 200)
         }
         do {
-            _ = try rw.parse(data: Data(#"{"error":{"message":"Incorrect API key provided: test-key-0123456789","type":"invalid_request_error"}}"#.utf8), status: 401)
+            _ = try rw.parse(data: Data(#"{"error":{"message":"Incorrect API key provided: test-key-0123456789","type":"invalid_request_error"}}"#.utf8), status: 401)  // gitleaks:allow — fake test key
             Issue.record("expected an error")
         } catch let e as RewriteError {
             guard case .http(401, let m) = e else { Issue.record("wrong error \(e)"); return }
